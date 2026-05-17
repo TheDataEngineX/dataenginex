@@ -43,7 +43,7 @@ jobs:
         env:
           UV_PROJECT_ENVIRONMENT: .venv
       - run: uv run poe test-cov-core
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v6
         with:
           flags: dataenginex
           fail_ci_if_error: false
