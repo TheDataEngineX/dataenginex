@@ -122,7 +122,7 @@ DataEngineXError
 ```
 TheDataEngineX/
 ├── DEX            — Core framework (PyPI: dataenginex)
-├── dex-studio     — Web UI (NiceGUI) — single pane of glass
+├── dex-studio     — Web UI (Reflex) — single pane of glass
 └── infradex       — Terraform + Helm + K3s deployment
 ```
 
