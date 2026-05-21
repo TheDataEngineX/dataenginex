@@ -66,10 +66,9 @@ class BuiltinServingEngine(BaseServingEngine):
         )
 
     def predict(self, model_name: str, data: Any) -> Any:
-        """Run inference on loaded model."""
+        """Run inference on loaded model, auto-loading from registry if needed."""
         if model_name not in self._loaded:
-            msg = f"Model '{model_name}' not loaded — call load_model() first"
-            raise RuntimeError(msg)
+            self.load_model(model_name)
 
         request = PredictionRequest(
             model_name=model_name,

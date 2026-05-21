@@ -28,6 +28,25 @@ uv sync --group dashboard
 streamlit run examples/dashboard/run_dashboard.py
 ```
 
+## Template Projects
+
+Full end-to-end templates showing all platform features together.
+
+- **MovieDex** — Real IMDB + Wikidata data (no API keys). Data + ML + AI: pipelines, quality,
+  lineage, rating prediction, drift, RAG, two agents.
+  `uv run python examples/movie-dex/run_all.py`
+
+- **ShopMetrics** — Synthetic e-commerce. Customer churn ML, product RAG, medallion architecture.
+  `uv run python examples/ecommerce/run_all.py`
+
+Refresh live MovieDex data:
+
+```bash
+uv run python examples/movie-dex/scripts/fetch_data.py
+```
+
+---
+
 ## Examples
 
 | # | File | Description |

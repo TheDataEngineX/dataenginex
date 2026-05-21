@@ -34,7 +34,7 @@ from typing import Any
 
 import structlog
 
-from dataenginex.ml.llm import LLMResponse
+from dataenginex.ai.llm import LLMResponse
 
 logger = structlog.get_logger()
 

@@ -30,7 +30,7 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
     """Built-in ReAct agent runtime.
 
     Args:
-        llm: An LLM provider instance (from dataenginex.ml.llm).
+        llm: An LLM provider instance (from dataenginex.ai.llm).
         system_prompt: System prompt for the agent.
         tools: Tool registry for the agent to use.
         max_iterations: Maximum reasoning steps before stopping.
@@ -103,7 +103,7 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
             f"User: {message}"
         )
 
-        from dataenginex.ml.llm import ChatMessage
+        from dataenginex.ai.llm import ChatMessage
 
         messages = [
             ChatMessage(role="system", content=self._system_prompt),

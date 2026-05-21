@@ -7,7 +7,7 @@ from prometheus_client import REGISTRY
 from dataenginex.ai.agents.builtin import BuiltinAgentRuntime
 from dataenginex.ai.tools import ToolRegistry, ToolSpec
 from dataenginex.ml.drift import DriftDetector  # noqa: F401 — ensures registration
-from dataenginex.ml.scheduler import DriftMonitorConfig, DriftScheduler
+from dataenginex.orchestration.scheduler import DriftMonitorConfig, DriftScheduler
 
 
 def _sample_value(metric: str, labels: dict[str, str]) -> float:
@@ -50,7 +50,7 @@ class TestAgentRuntimeMetrics:
                 self._count = 0
 
             def chat(self, messages):  # type: ignore[no-untyped-def]
-                from dataenginex.ml.llm import LLMResponse
+                from dataenginex.ai.llm import LLMResponse
 
                 self._count += 1
                 if self._count == 1:
@@ -95,44 +95,3 @@ class TestDriftSchedulerEmitsDexGauge:
         assert found, "dex_ml_drift_score was not published by the scheduler"
 
 
-class TestMLRouterRBAC:
-    def test_promote_denied_without_role_in_enforce_mode(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-        from fastapi.testclient import TestClient
-
-        from dataenginex.api.factory import create_app
-        from dataenginex.config.schema import DexConfig, ProjectConfig
-
-        monkeypatch.setenv("DEX_RBAC_ENFORCE", "enforce")
-        config = DexConfig(project=ProjectConfig(name="t", version="0.1.0"))
-        app = create_app(config)
-        client = TestClient(app)
-        r = client.post("/api/v1/ml/models/foo/promote", json={"stage": "production"})
-        assert r.status_code == 403
-
-    def test_save_features_denied_without_role_in_enforce_mode(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-        from fastapi.testclient import TestClient
-
-        from dataenginex.api.factory import create_app
-        from dataenginex.config.schema import DexConfig, ProjectConfig
-
-        monkeypatch.setenv("DEX_RBAC_ENFORCE", "enforce")
-        config = DexConfig(project=ProjectConfig(name="t", version="0.1.0"))
-        app = create_app(config)
-        client = TestClient(app)
-        r = client.post("/api/v1/ml/features/grp", json={"data": [], "entity_key": "id"})
-        assert r.status_code == 403
-
-
-class TestAIRouterRBAC:
-    def test_agent_chat_denied_without_role_in_enforce_mode(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-        from fastapi.testclient import TestClient
-
-        from dataenginex.api.factory import create_app
-        from dataenginex.config.schema import DexConfig, ProjectConfig
-
-        monkeypatch.setenv("DEX_RBAC_ENFORCE", "enforce")
-        config = DexConfig(project=ProjectConfig(name="t", version="0.1.0"))
-        app = create_app(config)
-        client = TestClient(app)
-        r = client.post("/api/v1/ai/agents/nonexistent/chat", json={"message": "hi"})
-        assert r.status_code == 403

@@ -77,12 +77,12 @@ class TestBuiltinServingEngine:
         assert "test-model" in engine.list_models()
 
     def test_predict_without_load_raises(self, tmp_path: Path) -> None:
-        registry, _ = self._setup_model(tmp_path)
+        registry = ModelRegistry(persist_path=str(tmp_path / "empty_registry.json"))
         engine = BuiltinServingEngine(
             model_registry=registry,
             extra_modules=frozenset({"tests"}),
         )
-        with pytest.raises(RuntimeError, match="not loaded"):
+        with pytest.raises((RuntimeError, KeyError)):
             engine.predict("test-model", [{"x": 1}])
 
     def test_load_nonexistent_model(self, tmp_path: Path) -> None:

@@ -7,7 +7,7 @@ import time
 import pytest
 
 from dataenginex.ml.drift import DriftReport
-from dataenginex.ml.scheduler import (
+from dataenginex.orchestration.scheduler import (
     DriftCheckResult,
     DriftMonitorConfig,
     DriftScheduler,

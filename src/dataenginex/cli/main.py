@@ -74,7 +74,6 @@ def validate(config_path: Path, overlay: Path | None) -> None:
             ("ML Experiments", str(len(cfg.ml.experiments))),
             ("AI Agents", str(len(cfg.ai.agents))),
             ("AI Collections", str(len(cfg.ai.collections))),
-            ("Server", f"{cfg.server.host}:{cfg.server.port}"),
         ],
     )
     click.echo("Config is valid.")
@@ -94,11 +93,9 @@ def version() -> None:
 
 
 from dataenginex.cli.run import run  # noqa: E402
-from dataenginex.cli.serve import serve  # noqa: E402
 from dataenginex.cli.train import train  # noqa: E402
 
 dex.add_command(run)
-dex.add_command(serve)
 dex.add_command(train)
 
 if __name__ == "__main__":

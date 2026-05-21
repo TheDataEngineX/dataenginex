@@ -17,16 +17,7 @@ dependencies = [
     "croniter>=6.2.2",
     "httpx>=0.28.1",
     "prometheus-client>=0.25.0",
-    # API framework
-    "fastapi>=0.136.1",
-    "uvicorn>=0.46.0",
     "structlog>=25.5.0",
-    # OpenTelemetry
-    "opentelemetry-api>=1.41.1",
-    "opentelemetry-sdk>=1.41.1",
-    "opentelemetry-instrumentation-fastapi>=0.62b1",
-    "opentelemetry-exporter-otlp>=1.41.1",
-    "email-validator>=2.3.0",
     # Data formats
     "pyarrow>=23.0.1",
     # Async job queue (ARQ — Redis-backed, single dep)
@@ -46,10 +37,6 @@ cloud = [
     "boto3>=1.43.7",
     "google-cloud-storage>=3.10.1",
     "google-cloud-bigquery>=3.41.0",
-]
-auth = [
-    "pyjwt[crypto]>=2.12.1",
-    "ldap3>=2.9.1",
 ]
 # NOTE: litellm is NOT declared here because it pins python-dotenv==1.0.1, which
 # conflicts with our python-dotenv>=1.2.1. Install separately for LiteLLMProvider:
@@ -75,8 +62,6 @@ dev = [
     "mkdocstrings[python]>=1.0.4",
     "pre-commit>=4.6.0",
     "pip-audit>=2.10.0",
-    "pyjwt[crypto]>=2.12.1",
-    "cryptography>=46.0.7",
 ]
 data = [
     "pyspark>=4.1.1",
@@ -152,7 +137,7 @@ module = ["sentence_transformers.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["litellm.*", "langfuse.*", "ldap3.*"]
+module = ["litellm.*", "langfuse.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -164,7 +149,7 @@ module = ["dataenginex.data.quality.spark"]
 warn_unused_ignores = false  # pyspark optional: ignore used in CI, unused when installed
 
 [[tool.mypy.overrides]]
-module = ["dataenginex.ml.vectorstore"]
+module = ["dataenginex.ai.vectorstore"]
 warn_unused_ignores = false  # sentence-transformers optional: ignore used in CI, unused when installed
 
 [[tool.mypy.overrides]]

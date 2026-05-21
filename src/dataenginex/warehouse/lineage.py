@@ -13,16 +13,28 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast, runtime_checkable
 
 import structlog
 
 logger = structlog.get_logger()
 __all__ = [
+    "LineageBackend",
     "LineageEvent",
     "PersistentLineage",
     "PostgresLineage",
 ]
+
+
+@runtime_checkable
+class LineageBackend(Protocol):
+    """Structural interface for lineage recording.
+
+    Any object with a ``record(**kwargs)`` method satisfies this Protocol —
+    both :class:`PersistentLineage` and ``dataenginex.store.DexStore`` qualify.
+    """
+
+    def record(self, **kwargs: Any) -> Any: ...
 
 
 @dataclass
