@@ -292,9 +292,15 @@ class DexStore:
                     rows_input, rows_output, steps_completed, duration_ms, error)
                    VALUES (?,?,?,?,?,?,?,?,?)""",
                 [
-                    rec.run_id, rec.pipeline_name, rec.timestamp, rec.success,
-                    rec.rows_input, rec.rows_output, rec.steps_completed,
-                    rec.duration_ms, rec.error,
+                    rec.run_id,
+                    rec.pipeline_name,
+                    rec.timestamp,
+                    rec.success,
+                    rec.rows_input,
+                    rec.rows_output,
+                    rec.steps_completed,
+                    rec.duration_ms,
+                    rec.error,
                 ],
             )
         logger.info("pipeline run recorded", pipeline=pipeline_name, success=success)
@@ -322,9 +328,15 @@ class DexStore:
     @staticmethod
     def _row_to_run(row: tuple[Any, ...]) -> PipelineRunRecord:
         return PipelineRunRecord(
-            run_id=row[0], pipeline_name=row[1], timestamp=row[2],
-            success=bool(row[3]), rows_input=row[4], rows_output=row[5],
-            steps_completed=row[6], duration_ms=row[7], error=row[8],
+            run_id=row[0],
+            pipeline_name=row[1],
+            timestamp=row[2],
+            success=bool(row[3]),
+            rows_input=row[4],
+            rows_output=row[5],
+            steps_completed=row[6],
+            duration_ms=row[7],
+            error=row[8],
         )
 
     # =========================================================================
@@ -343,11 +355,20 @@ class DexStore:
                     pipeline_name, step_name, metadata, timestamp)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
-                    event.event_id, event.parent_id, event.operation, event.layer,
-                    event.source, event.destination, event.input_count,
-                    event.output_count, event.error_count, event.quality_score,
-                    event.pipeline_name, event.step_name,
-                    json.dumps(event.metadata), event.timestamp.isoformat(),
+                    event.event_id,
+                    event.parent_id,
+                    event.operation,
+                    event.layer,
+                    event.source,
+                    event.destination,
+                    event.input_count,
+                    event.output_count,
+                    event.error_count,
+                    event.quality_score,
+                    event.pipeline_name,
+                    event.step_name,
+                    json.dumps(event.metadata),
+                    event.timestamp.isoformat(),
                 ],
             )
         return event
@@ -405,10 +426,19 @@ class DexStore:
     def _row_to_lineage(row: tuple[Any, ...]) -> LineageEvent:
         meta: dict[str, Any] = json.loads(row[12]) if row[12] else {}
         return LineageEvent(
-            event_id=row[0], parent_id=row[1], operation=row[2], layer=row[3],
-            source=row[4], destination=row[5], input_count=row[6],
-            output_count=row[7], error_count=row[8], quality_score=row[9],
-            pipeline_name=row[10], step_name=row[11], metadata=meta,
+            event_id=row[0],
+            parent_id=row[1],
+            operation=row[2],
+            layer=row[3],
+            source=row[4],
+            destination=row[5],
+            input_count=row[6],
+            output_count=row[7],
+            error_count=row[8],
+            quality_score=row[9],
+            pipeline_name=row[10],
+            step_name=row[11],
+            metadata=meta,
             timestamp=datetime.fromisoformat(row[13]) if row[13] else datetime.now(tz=UTC),
         )
 
@@ -428,10 +458,15 @@ class DexStore:
                     description, tags, created_at, promoted_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 [
-                    artifact.name, artifact.version, artifact.stage,
-                    artifact.artifact_path, json.dumps(artifact.metrics),
-                    json.dumps(artifact.parameters), artifact.description,
-                    json.dumps(artifact.tags), artifact.created_at.isoformat(),
+                    artifact.name,
+                    artifact.version,
+                    artifact.stage,
+                    artifact.artifact_path,
+                    json.dumps(artifact.metrics),
+                    json.dumps(artifact.parameters),
+                    artifact.description,
+                    json.dumps(artifact.tags),
+                    artifact.created_at.isoformat(),
                     artifact.promoted_at.isoformat() if artifact.promoted_at else None,
                 ],
             )
@@ -501,9 +536,14 @@ class DexStore:
     @staticmethod
     def _row_to_model(row: tuple[Any, ...]) -> ModelArtifact:
         return ModelArtifact(
-            name=row[0], version=row[1], stage=row[2], artifact_path=row[3],
-            metrics=json.loads(row[4]), parameters=json.loads(row[5]),
-            description=row[6], tags=json.loads(row[7]),
+            name=row[0],
+            version=row[1],
+            stage=row[2],
+            artifact_path=row[3],
+            metrics=json.loads(row[4]),
+            parameters=json.loads(row[5]),
+            description=row[6],
+            tags=json.loads(row[7]),
             created_at=datetime.fromisoformat(row[8]) if row[8] else datetime.now(tz=UTC),
             promoted_at=datetime.fromisoformat(row[9]) if row[9] else None,
         )
@@ -531,10 +571,7 @@ class DexStore:
             "SELECT run_id, timestamp, results FROM quality_runs ORDER BY timestamp DESC LIMIT ?",
             [limit],
         ).fetchall()
-        runs = [
-            {"run_id": r[0], "timestamp": r[1], "results": json.loads(r[2])}
-            for r in rows
-        ]
+        runs = [{"run_id": r[0], "timestamp": r[1], "results": json.loads(r[2])} for r in rows]
         return {"runs": runs}
 
     # =========================================================================
@@ -552,8 +589,13 @@ class DexStore:
         ip_address: str = "",
     ) -> AuditEvent:
         event = AuditEvent(
-            action=action, resource=resource, resource_type=resource_type,
-            actor=actor, status=status, details=details or {}, ip_address=ip_address,
+            action=action,
+            resource=resource,
+            resource_type=resource_type,
+            actor=actor,
+            status=status,
+            details=details or {},
+            ip_address=ip_address,
         )
         with self._lock:
             self._con.execute(
@@ -562,9 +604,15 @@ class DexStore:
                     status, details, ip_address)
                    VALUES (?,?,?,?,?,?,?,?,?)""",
                 [
-                    event.event_id, event.timestamp, event.actor, event.action,
-                    event.resource, event.resource_type, event.status,
-                    json.dumps(event.details), event.ip_address,
+                    event.event_id,
+                    event.timestamp,
+                    event.actor,
+                    event.action,
+                    event.resource,
+                    event.resource_type,
+                    event.status,
+                    json.dumps(event.details),
+                    event.ip_address,
                 ],
             )
         return event
@@ -598,9 +646,15 @@ class DexStore:
     @staticmethod
     def _row_to_audit(row: tuple[Any, ...]) -> AuditEvent:
         return AuditEvent(
-            event_id=row[0], timestamp=row[1], actor=row[2], action=row[3],
-            resource=row[4], resource_type=row[5], status=row[6],
-            details=json.loads(row[7]), ip_address=row[8],
+            event_id=row[0],
+            timestamp=row[1],
+            actor=row[2],
+            action=row[3],
+            resource=row[4],
+            resource_type=row[5],
+            status=row[6],
+            details=json.loads(row[7]),
+            ip_address=row[8],
         )
 
     # =========================================================================
@@ -629,8 +683,7 @@ class DexStore:
         query_lower = query.lower()
         all_entries = self.get_recent_memory(1000)
         scored = [
-            (sum(1 for w in query_lower.split() if w in e.content.lower()), e)
-            for e in all_entries
+            (sum(1 for w in query_lower.split() if w in e.content.lower()), e) for e in all_entries
         ]
         scored = [(s, e) for s, e in scored if s > 0]
         scored.sort(key=lambda x: x[0], reverse=True)
@@ -646,8 +699,11 @@ class DexStore:
                 "INSERT INTO ai_episodes"
                 " (task, steps, outcome, reward, timestamp) VALUES (?,?,?,?,?)",
                 [
-                    episode.task, json.dumps(episode.steps),
-                    episode.outcome, episode.reward, episode.timestamp,
+                    episode.task,
+                    json.dumps(episode.steps),
+                    episode.outcome,
+                    episode.reward,
+                    episode.timestamp,
                 ],
             )
 
@@ -661,10 +717,7 @@ class DexStore:
             for r in rows
         ]
         task_lower = task.lower()
-        scored = [
-            (sum(1 for w in task_lower.split() if w in e.task.lower()), e)
-            for e in episodes
-        ]
+        scored = [(sum(1 for w in task_lower.split() if w in e.task.lower()), e) for e in episodes]
         scored = [(s, e) for s, e in scored if s > 0]
         scored.sort(key=lambda x: x[0], reverse=True)
         return [e for _, e in scored[:top_k]]
@@ -686,20 +739,26 @@ class DexStore:
                     description, owner, tags, created_at, updated_at, metadata, version)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
-                    entry.name, entry.layer, entry.format, entry.location,
-                    entry.record_count, json.dumps(entry.schema_fields),
-                    entry.description, entry.owner, json.dumps(entry.tags),
-                    entry.created_at.isoformat(), entry.updated_at.isoformat(),
-                    json.dumps(entry.metadata), entry.version,
+                    entry.name,
+                    entry.layer,
+                    entry.format,
+                    entry.location,
+                    entry.record_count,
+                    json.dumps(entry.schema_fields),
+                    entry.description,
+                    entry.owner,
+                    json.dumps(entry.tags),
+                    entry.created_at.isoformat(),
+                    entry.updated_at.isoformat(),
+                    json.dumps(entry.metadata),
+                    entry.version,
                 ],
             )
         logger.info("catalog entry registered", name=entry.name, layer=entry.layer)
         return entry
 
     def get_catalog(self, name: str) -> CatalogEntry | None:
-        row = self._con.execute(
-            "SELECT * FROM catalog_entries WHERE name=?", [name]
-        ).fetchone()
+        row = self._con.execute("SELECT * FROM catalog_entries WHERE name=?", [name]).fetchone()
         return self._row_to_catalog(row) if row else None
 
     def search_catalog(
@@ -731,12 +790,19 @@ class DexStore:
     @staticmethod
     def _row_to_catalog(row: tuple[Any, ...]) -> CatalogEntry:
         return CatalogEntry(
-            name=row[0], layer=row[1], format=row[2], location=row[3],
-            record_count=row[4], schema_fields=json.loads(row[5]),
-            description=row[6], owner=row[7], tags=json.loads(row[8]),
+            name=row[0],
+            layer=row[1],
+            format=row[2],
+            location=row[3],
+            record_count=row[4],
+            schema_fields=json.loads(row[5]),
+            description=row[6],
+            owner=row[7],
+            tags=json.loads(row[8]),
             created_at=datetime.fromisoformat(row[9]) if row[9] else datetime.now(tz=UTC),
             updated_at=datetime.fromisoformat(row[10]) if row[10] else datetime.now(tz=UTC),
-            metadata=json.loads(row[11]), version=row[12],
+            metadata=json.loads(row[11]),
+            version=row[12],
         )
 
     # =========================================================================

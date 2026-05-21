@@ -36,7 +36,11 @@ class TestPipelineRuns:
 
     def test_record_with_details(self, store: DexStore) -> None:
         rec = store.record_pipeline_run(
-            "etl", True, rows_input=100, rows_output=95, steps_completed=3,
+            "etl",
+            True,
+            rows_input=100,
+            rows_output=95,
+            steps_completed=3,
         )
         assert rec.rows_input == 100
         assert rec.rows_output == 95
@@ -54,9 +58,12 @@ class TestPipelineRuns:
 class TestLineage:
     def test_record_event(self, store: DexStore) -> None:
         ev = store.record(
-            operation="ingest", layer="bronze",
-            source="csv", destination="raw_data",
-            input_count=100, output_count=100,
+            operation="ingest",
+            layer="bronze",
+            source="csv",
+            destination="raw_data",
+            input_count=100,
+            output_count=100,
         )
         assert ev.event_id
         assert ev.operation == "ingest"
@@ -75,8 +82,11 @@ class TestLineage:
     def test_get_lineage_children(self, store: DexStore) -> None:
         parent = store.record(operation="ingest", layer="bronze", source="s", destination="d")
         child = store.record(
-            operation="transform", layer="silver",
-            source="d", destination="d2", parent_id=parent.event_id,
+            operation="transform",
+            layer="silver",
+            source="d",
+            destination="d2",
+            parent_id=parent.event_id,
         )
         children = store.get_lineage_children(parent.event_id)
         assert len(children) == 1
@@ -92,10 +102,16 @@ class TestLineage:
         assert store.get_lineage_event("nonexistent") is None
 
     def test_get_lineage_by_pipeline(self, store: DexStore) -> None:
-        store.record(operation="ingest", layer="bronze", source="s", destination="d",
-                     pipeline_name="pipe_a")
-        store.record(operation="ingest", layer="bronze", source="s2", destination="d2",
-                     pipeline_name="pipe_b")
+        store.record(
+            operation="ingest", layer="bronze", source="s", destination="d", pipeline_name="pipe_a"
+        )
+        store.record(
+            operation="ingest",
+            layer="bronze",
+            source="s2",
+            destination="d2",
+            pipeline_name="pipe_b",
+        )
         results = store.get_lineage_by_pipeline("pipe_a")
         assert len(results) == 1
 
@@ -109,8 +125,10 @@ class TestLineage:
 class TestAuditLog:
     def test_log_and_retrieve(self, store: DexStore) -> None:
         store.log_audit(
-            actor="user", action="run_pipeline",
-            resource="ingest", resource_type="pipeline",
+            actor="user",
+            action="run_pipeline",
+            resource="ingest",
+            resource_type="pipeline",
         )
         entries = store.get_audit_events()
         assert len(entries) == 1
@@ -134,6 +152,7 @@ class TestAIMemory:
     def test_search_memory(self, store: DexStore) -> None:
         def _mem(content: str, ts: float) -> MemoryEntry:
             return MemoryEntry(content=content, role="user", metadata={}, timestamp=ts)
+
         store.save_memory(_mem("python rocks", 1.0))
         store.save_memory(_mem("duckdb fast", 2.0))
         results = store.search_memory("python")
@@ -159,8 +178,12 @@ class TestEpisodes:
 class TestModelArtifacts:
     def _artifact(self, name: str = "model", version: str = "1.0.0") -> ModelArtifact:
         return ModelArtifact(
-            name=name, version=version, stage="development",
-            artifact_path="/tmp/m.pkl", metrics={}, parameters={},
+            name=name,
+            version=version,
+            stage="development",
+            artifact_path="/tmp/m.pkl",
+            metrics={},
+            parameters={},
         )
 
     def test_register_and_get(self, store: DexStore) -> None:
@@ -228,7 +251,9 @@ class TestQualityRuns:
 class TestCatalog:
     def test_register_and_get(self, store: DexStore) -> None:
         entry = CatalogEntry(
-            name="bronze_jobs", layer="bronze", format="parquet",
+            name="bronze_jobs",
+            layer="bronze",
+            format="parquet",
             location="/data/bronze/jobs.parquet",
         )
         store.register_catalog(entry)
@@ -237,34 +262,63 @@ class TestCatalog:
         assert found.layer == "bronze"
 
     def test_all_catalog(self, store: DexStore) -> None:
-        store.register_catalog(CatalogEntry(
-            name="a", layer="bronze", format="parquet", location="/a",
-        ))
-        store.register_catalog(CatalogEntry(
-            name="b", layer="silver", format="parquet", location="/b",
-        ))
+        store.register_catalog(
+            CatalogEntry(
+                name="a",
+                layer="bronze",
+                format="parquet",
+                location="/a",
+            )
+        )
+        store.register_catalog(
+            CatalogEntry(
+                name="b",
+                layer="silver",
+                format="parquet",
+                location="/b",
+            )
+        )
         assert len(store.all_catalog()) == 2
 
     def test_search_catalog(self, store: DexStore) -> None:
-        store.register_catalog(CatalogEntry(
-            name="bronze_jobs", layer="bronze", format="parquet",
-            location="/data/bronze/jobs.parquet",
-        ))
-        store.register_catalog(CatalogEntry(
-            name="silver_jobs", layer="silver", format="parquet",
-            location="/data/silver/jobs.parquet",
-        ))
+        store.register_catalog(
+            CatalogEntry(
+                name="bronze_jobs",
+                layer="bronze",
+                format="parquet",
+                location="/data/bronze/jobs.parquet",
+            )
+        )
+        store.register_catalog(
+            CatalogEntry(
+                name="silver_jobs",
+                layer="silver",
+                format="parquet",
+                location="/data/silver/jobs.parquet",
+            )
+        )
         results = store.search_catalog(layer="bronze")
         assert len(results) == 1
         assert results[0].layer == "bronze"
 
     def test_upsert_catalog_entry(self, store: DexStore) -> None:
-        store.register_catalog(CatalogEntry(
-            name="tbl", layer="gold", format="parquet", location="/x",
-        ))
-        store.register_catalog(CatalogEntry(
-            name="tbl", layer="gold", format="parquet", location="/x", record_count=42,
-        ))
+        store.register_catalog(
+            CatalogEntry(
+                name="tbl",
+                layer="gold",
+                format="parquet",
+                location="/x",
+            )
+        )
+        store.register_catalog(
+            CatalogEntry(
+                name="tbl",
+                layer="gold",
+                format="parquet",
+                location="/x",
+                record_count=42,
+            )
+        )
         found = store.get_catalog("tbl")
         assert found is not None
         assert found.record_count == 42

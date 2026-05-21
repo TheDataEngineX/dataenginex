@@ -229,7 +229,8 @@ class DexEngine:
         total = len(pipelines)
         scheduled = sum(1 for p in pipelines.values() if p.schedule)
         failed = sum(
-            1 for name in pipelines
+            1
+            for name in pipelines
             if (run := self.store.get_last_pipeline_run(name)) and not run.success
         )
         return {"total": total, "scheduled": scheduled, "failed": failed, "running": 0}
@@ -274,9 +275,7 @@ class DexEngine:
         self.config.data.sources.pop(name, None)
         self._save_config()
 
-    def add_agent(
-        self, name: str, runtime: str = "builtin", system_prompt: str = ""
-    ) -> None:
+    def add_agent(self, name: str, runtime: str = "builtin", system_prompt: str = "") -> None:
         from dataenginex.config.schema import AgentConfig
 
         self.config.ai.agents[name] = AgentConfig(runtime=runtime, system_prompt=system_prompt)
@@ -328,14 +327,23 @@ class DexEngine:
                 # Register/refresh in catalog
                 self.catalog.register(
                     LakehouseCatalogEntry(
-                        name=f.stem, layer=layer, format="parquet",
-                        location=str(f), record_count=row_count or 0,
+                        name=f.stem,
+                        layer=layer,
+                        format="parquet",
+                        location=str(f),
+                        record_count=row_count or 0,
                     )
                 )
-                tables.append({
-                    "name": f.stem, "path": str(f), "size_bytes": size_bytes,
-                    "size": size, "row_count": row_count, "updated_at": updated_at,
-                })
+                tables.append(
+                    {
+                        "name": f.stem,
+                        "path": str(f),
+                        "size_bytes": size_bytes,
+                        "size": size,
+                        "row_count": row_count,
+                        "updated_at": updated_at,
+                    }
+                )
             except OSError:
                 continue
         return tables
@@ -374,16 +382,22 @@ class DexEngine:
             if ev.destination == table_name and ev.layer == layer and ev.parent_id:
                 parent = self.store.get_lineage_event(ev.parent_id)
                 if parent:
-                    upstream.append({
-                        "name": parent.destination, "layer": parent.layer,
-                        "event_id": parent.event_id,
-                    })
+                    upstream.append(
+                        {
+                            "name": parent.destination,
+                            "layer": parent.layer,
+                            "event_id": parent.event_id,
+                        }
+                    )
             if ev.source == table_name and ev.layer == layer:
                 for child in self.store.get_lineage_children(ev.event_id):
-                    downstream.append({
-                        "name": child.destination, "layer": child.layer,
-                        "event_id": child.event_id,
-                    })
+                    downstream.append(
+                        {
+                            "name": child.destination,
+                            "layer": child.layer,
+                            "event_id": child.event_id,
+                        }
+                    )
         return {"upstream": upstream, "downstream": downstream}
 
     # -------------------------------------------------------------------------
@@ -396,8 +410,10 @@ class DexEngine:
             return None
         type_str = src.type.value if hasattr(src.type, "value") else str(src.type)
         _map = {
-            "csv": "read_csv_auto", "parquet": "read_parquet",
-            "json": "read_json_auto", "jsonl": "read_ndjson_auto",
+            "csv": "read_csv_auto",
+            "parquet": "read_parquet",
+            "json": "read_json_auto",
+            "jsonl": "read_ndjson_auto",
         }
         return _map.get(type_str)
 
@@ -439,8 +455,7 @@ class DexEngine:
                 f"DESCRIBE SELECT * FROM {read_fn}('{resolved}') LIMIT 1"
             ).fetchall()
             return [
-                {"column_name": r[0], "column_type": r[1], "nullable": r[3] == "YES"}
-                for r in rows
+                {"column_name": r[0], "column_type": r[1], "nullable": r[3] == "YES"} for r in rows
             ]
         return None
 
@@ -499,8 +514,11 @@ class DexEngine:
                     ColumnSpec(name=r[0], dtype=r[1], nullable=True) for r in col_result
                 ]
                 result = check_quality(
-                    conn, "_qc",
-                    completeness=0.0, uniqueness=column_names, schema=column_specs,
+                    conn,
+                    "_qc",
+                    completeness=0.0,
+                    uniqueness=column_names,
+                    schema=column_specs,
                 )
                 conn.execute("DROP VIEW IF EXISTS _qc")
                 custom_weight = 1.0 if result.custom_passed else 0.0
@@ -510,10 +528,13 @@ class DexEngine:
                     + custom_weight * 0.3
                 )
                 return {
-                    "score": score, "completeness": result.completeness_score,
-                    "uniqueness": result.uniqueness_score, "custom_passed": result.custom_passed,
+                    "score": score,
+                    "completeness": result.completeness_score,
+                    "uniqueness": result.uniqueness_score,
+                    "custom_passed": result.custom_passed,
                     "schema_violations": result.schema_violations,
-                    "passed": result.passed, "details": result.details,
+                    "passed": result.passed,
+                    "details": result.details,
                 }
         except Exception as exc:
             logger.warning("quality check failed", table=table_name, error=str(exc))
@@ -646,11 +667,14 @@ class DexEngine:
                 if agent_cfg.model:
                     with contextlib.suppress(Exception):
                         from dataenginex.ai.llm import get_llm_provider as _get
+
                         agent_llm = _get(self.config.ai.llm.provider, model=agent_cfg.model)
                 cls: Any = cast(Any, agent_registry.get(agent_cfg.runtime))
                 self.agents[name] = cls(
-                    llm=agent_llm, system_prompt=agent_cfg.system_prompt,
-                    tools=tool_registry, max_iterations=agent_cfg.max_iterations,
+                    llm=agent_llm,
+                    system_prompt=agent_cfg.system_prompt,
+                    tools=tool_registry,
+                    max_iterations=agent_cfg.max_iterations,
                 )
                 logger.info("agent initialized", agent=name)
         except Exception:
@@ -684,12 +708,15 @@ class DexEngine:
         providers: dict[str, Any] = {}
         if os.environ.get("ANTHROPIC_API_KEY"):
             from dataenginex.ai.routing.anthropic import AnthropicProvider
+
             providers["anthropic"] = AnthropicProvider()
         if os.environ.get("OPENAI_API_KEY"):
             from dataenginex.ai.routing.openai import OpenAIProvider
+
             providers["openai"] = OpenAIProvider()
 
         from dataenginex.ai.routing.ollama import OllamaProvider
+
         providers.setdefault("ollama", OllamaProvider())
 
         if providers:

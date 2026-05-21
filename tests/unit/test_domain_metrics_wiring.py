@@ -93,5 +93,3 @@ class TestDriftSchedulerEmitsDexGauge:
                         found = True
                         break
         assert found, "dex_ml_drift_score was not published by the scheduler"
-
-

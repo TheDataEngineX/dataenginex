@@ -61,10 +61,12 @@ class TestDexEngineInit:
 
     def test_store_is_accessible(self, engine: DexEngine) -> None:
         from dataenginex.store import DexStore
+
         assert isinstance(engine.store, DexStore)
 
     def test_catalog_is_accessible(self, engine: DexEngine) -> None:
         from dataenginex.lakehouse.catalog import DataCatalog
+
         assert isinstance(engine.catalog, DataCatalog)
 
     def test_close(self, engine: DexEngine) -> None:

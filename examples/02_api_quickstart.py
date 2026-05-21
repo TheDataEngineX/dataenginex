@@ -4,8 +4,10 @@
 dataenginex is a library — your application owns the FastAPI app and wires
 in whatever routes it needs. This example shows the minimal pattern.
 
+fastapi and uvicorn are NOT dataenginex deps — your app owns them.
+
 Run:
-    uv run python examples/02_api_quickstart.py
+    uv run --with fastapi --with uvicorn python examples/02_api_quickstart.py
 
 Then visit:
     http://localhost:17000/          → root info
