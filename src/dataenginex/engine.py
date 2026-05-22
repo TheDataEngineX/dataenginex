@@ -56,8 +56,20 @@ class DexBackend(Protocol):
     serving_engine: Any
     llm: Any
     ai_memory: Any
+    ai_episodic: Any
+    ai_audit: Any
     plugins: Any
     catalog: Any
+    project_dir: Any
+
+    @property
+    def ai_long_memory(self) -> Any: ...
+    @property
+    def model_registry(self) -> Any: ...
+    @property
+    def lineage(self) -> Any: ...
+    @property
+    def audit(self) -> Any: ...
 
     def run_pipeline(self, name: str) -> Any: ...
     def pipeline_stats(self) -> dict[str, int]: ...
@@ -73,7 +85,7 @@ class DexBackend(Protocol):
     def source_row_count(self, source_name: str) -> int | None: ...
     def source_schema(self, source_name: str) -> list[dict[str, Any]] | None: ...
     def source_sample(
-        self, source_name: str, limit: int, offset: int
+        self, source_name: str, limit: int = 10, offset: int = 0
     ) -> list[dict[str, Any]] | None: ...
     def source_stats(self, source_name: str) -> dict[str, Any] | None: ...
 
@@ -83,7 +95,7 @@ class DexBackend(Protocol):
 
     def add_pipeline(self, name: str, source: str, schedule: str, destination: str) -> None: ...
     def delete_pipeline(self, name: str) -> None: ...
-    def add_source(self, name: str, type_: str, path: str, url: str) -> None: ...
+    def add_source(self, name: str, type_: str, path: str = "", url: str = "") -> None: ...
     def delete_source(self, name: str) -> None: ...
     def add_agent(self, name: str, runtime: str, system_prompt: str) -> None: ...
     def delete_agent(self, name: str) -> None: ...
@@ -108,6 +120,13 @@ class DexEngine:
     Args:
         config_path: Path to a ``dex.yaml`` file.
     """
+
+    _SOURCE_EXT_MAP: dict[str, str] = {
+        "csv": "*.csv",
+        "parquet": "*.parquet",
+        "json": "*.json",
+        "jsonl": "*.jsonl",
+    }
 
     def __init__(self, config_path: str | Path) -> None:
         self.config_path = Path(config_path).resolve()
@@ -168,6 +187,30 @@ class DexEngine:
             project=self.config.project.name,
             config=str(self.config_path),
         )
+
+    # -------------------------------------------------------------------------
+    # Convenience properties — expose subsystem attributes used by Studio
+    # -------------------------------------------------------------------------
+
+    @property
+    def model_registry(self) -> Any:
+        if self.serving_engine is not None and hasattr(self.serving_engine, "_registry"):
+            return self.serving_engine._registry
+        from dataenginex.ml.registry import ModelRegistry
+
+        return ModelRegistry(persist_path=str(self._dex_dir / "models" / "registry.json"))
+
+    @property
+    def lineage(self) -> Any:
+        return self.store
+
+    @property
+    def audit(self) -> Any:
+        return self.ai_audit
+
+    @property
+    def ai_long_memory(self) -> Any:
+        return self.ai_memory
 
     # -------------------------------------------------------------------------
     # Pipeline
@@ -298,7 +341,8 @@ class DexEngine:
         layers: list[dict[str, Any]] = []
         for layer_name in ("bronze", "silver", "gold"):
             layer_path = lakehouse / layer_name
-            table_count = len(list(layer_path.glob("*.parquet"))) if layer_path.exists() else 0
+            pq = self._SOURCE_EXT_MAP["parquet"]
+            table_count = len(list(layer_path.glob(pq))) if layer_path.exists() else 0
             layers.append({"name": layer_name, "table_count": table_count})
         return layers
 
@@ -309,7 +353,7 @@ class DexEngine:
         if not layer_path.exists():
             return []
         tables: list[dict[str, Any]] = []
-        for f in sorted(layer_path.glob("*.parquet")):
+        for f in sorted(layer_path.glob(self._SOURCE_EXT_MAP["parquet"])):
             try:
                 stat = f.stat()
                 size_bytes = stat.st_size
@@ -418,42 +462,64 @@ class DexEngine:
         return _map.get(type_str)
 
     def _source_path(self, source_name: str) -> tuple[Any, Path] | None:
+        """Return (src_config, base_path) — base_path may be a dir or file."""
         src = self.config.data.sources.get(source_name)
         if src is None:
             return None
         raw = getattr(src, "path", None) or getattr(src, "uri", None)
         if not raw:
             return None
-        p = Path(raw)
+        p = Path(str(raw).split("*")[0].rstrip("/"))  # strip glob suffix for base
         if not p.is_absolute():
             p = self.project_dir / p
         return src, p.resolve()
 
-    def source_row_count(self, source_name: str) -> int | None:
-        result = self._source_path(source_name)
-        if result is None:
+    def _source_query_path(self, source_name: str) -> str | None:
+        """Return a DuckDB-queryable path string (glob for directories/wildcards)."""
+        src = self.config.data.sources.get(source_name)
+        if src is None:
             return None
-        _, resolved = result
+        raw = getattr(src, "path", None) or getattr(src, "uri", None)
+        if not raw:
+            return None
+        raw_str = str(raw)
+        # explicit glob pattern — resolve the base portion, keep glob suffix
+        if "*" in raw_str:
+            parts = raw_str.split("*", 1)
+            base = Path(parts[0]) if Path(parts[0]).is_absolute() else self.project_dir / parts[0]
+            return str(base.resolve()) + "*" + parts[1]
+        p = Path(raw_str)
+        if not p.is_absolute():
+            p = self.project_dir / p
+        resolved = p.resolve()
+        # directory → build glob from type extension
+        if resolved.is_dir():
+            type_str = src.type.value if hasattr(src.type, "value") else str(src.type)
+            glob_pat = self._SOURCE_EXT_MAP.get(type_str, "*.*")
+            return str(resolved / glob_pat)
+        return str(resolved)
+
+    def source_row_count(self, source_name: str) -> int | None:
+        qpath = self._source_query_path(source_name)
+        if qpath is None:
+            return None
         read_fn = self._source_read_fn(source_name)
         if read_fn is None:
             return None
         with contextlib.suppress(Exception), duckdb.connect(":memory:") as conn:
-            row = conn.execute(f"SELECT COUNT(*) FROM {read_fn}('{resolved}')").fetchone()
+            row = conn.execute(f"SELECT COUNT(*) FROM {read_fn}('{qpath}')").fetchone()
             return row[0] if row else 0
         return None
 
     def source_schema(self, source_name: str) -> list[dict[str, Any]] | None:
-        result = self._source_path(source_name)
-        if result is None:
+        qpath = self._source_query_path(source_name)
+        if qpath is None:
             return None
-        _, resolved = result
         read_fn = self._source_read_fn(source_name)
         if read_fn is None:
             return None
         with contextlib.suppress(Exception), duckdb.connect(":memory:") as conn:
-            rows = conn.execute(
-                f"DESCRIBE SELECT * FROM {read_fn}('{resolved}') LIMIT 1"
-            ).fetchall()
+            rows = conn.execute(f"DESCRIBE SELECT * FROM {read_fn}('{qpath}') LIMIT 1").fetchall()
             return [
                 {"column_name": r[0], "column_type": r[1], "nullable": r[3] == "YES"} for r in rows
             ]
@@ -462,16 +528,15 @@ class DexEngine:
     def source_sample(
         self, source_name: str, limit: int = 10, offset: int = 0
     ) -> list[dict[str, Any]] | None:
-        result = self._source_path(source_name)
-        if result is None:
+        qpath = self._source_query_path(source_name)
+        if qpath is None:
             return None
-        _, resolved = result
         read_fn = self._source_read_fn(source_name)
         if read_fn is None:
             return None
         with contextlib.suppress(Exception), duckdb.connect(":memory:") as conn:
             cursor = conn.execute(
-                f"SELECT * FROM {read_fn}('{resolved}') LIMIT {limit} OFFSET {offset}"
+                f"SELECT * FROM {read_fn}('{qpath}') LIMIT {limit} OFFSET {offset}"
             )
             col_names = [d[0] for d in cursor.description] if cursor.description else []
             return [dict(zip(col_names, row, strict=True)) for row in cursor.fetchall()]
@@ -481,14 +546,20 @@ class DexEngine:
         result = self._source_path(source_name)
         if result is None:
             return None
-        src, resolved = result
-        size_bytes = resolved.stat().st_size if resolved.exists() else 0
+        src, base_path = result
+        # for directories/globs, sum sizes of all matched files
+        if base_path.is_dir():
+            type_str = src.type.value if hasattr(src.type, "value") else str(src.type)
+            glob_pat = self._SOURCE_EXT_MAP.get(type_str, "*.*")
+            size_bytes = sum(f.stat().st_size for f in base_path.glob(glob_pat) if f.is_file())
+        else:
+            size_bytes = base_path.stat().st_size if base_path.exists() else 0
         schema = self.source_schema(source_name)
         return {
             "row_count": self.source_row_count(source_name),
             "column_count": len(schema) if schema else None,
             "size_bytes": size_bytes,
-            "path": str(resolved),
+            "path": str(base_path),
             "connector_type": getattr(src, "type", "unknown"),
         }
 

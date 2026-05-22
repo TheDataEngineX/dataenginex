@@ -219,12 +219,14 @@ class PipelineRunner:
         if not cfg.quality:
             return
         q = cfg.quality
+        # Resolve _data placeholder to the actual current table, same as SQLTransform does
+        resolved_sql = q.custom_sql.replace("_data", table) if q.custom_sql else None
         result = check_quality(
             conn,
             table,
             completeness=q.completeness,
             uniqueness=q.uniqueness,
-            custom_sql=q.custom_sql,
+            custom_sql=resolved_sql,
         )
         outcome = "pass" if result.passed else "fail"
         for gate, configured in (
