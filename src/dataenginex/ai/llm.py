@@ -15,7 +15,7 @@ transparently in RAG pipelines and agents.
 
 Example::
 
-    from dataenginex.ml.llm import get_llm_provider
+    from dataenginex.ai.llm import get_llm_provider
 
     llm = get_llm_provider("ollama", model="llama3.1:8b")
     response = llm.generate("Explain data lineage in 3 sentences.")

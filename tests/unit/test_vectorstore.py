@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dataenginex.ml.vectorstore import (
+from dataenginex.ai.vectorstore import (
     Document,
     InMemoryBackend,
     QdrantBackend,

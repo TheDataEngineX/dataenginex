@@ -9,11 +9,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from dataenginex.ai.llm import LLMResponse
 from dataenginex.ai.observability.langfuse import (
     LangfuseSink,
     trace_generation,
 )
-from dataenginex.ml.llm import LLMResponse
 
 
 def _response(text: str = "ok") -> LLMResponse:

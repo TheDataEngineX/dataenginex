@@ -1,14 +1,13 @@
 #!/usr/bin/env python
-"""02_api_quickstart.py — Launch the DEX FastAPI application.
+"""02_api_quickstart.py — Minimal FastAPI app built on top of dataenginex.
 
-Demonstrates:
-- Building the FastAPI app with health checks
-- Mounting the v1 API router
-- Configuring structured logging and metrics
-- Running with uvicorn
+dataenginex is a library — your application owns the FastAPI app and wires
+in whatever routes it needs. This example shows the minimal pattern.
+
+fastapi and uvicorn are NOT dataenginex deps — your app owns them.
 
 Run:
-    uv run python examples/02_api_quickstart.py
+    uv run --with fastapi --with uvicorn python examples/02_api_quickstart.py
 
 Then visit:
     http://localhost:17000/          → root info
@@ -25,7 +24,6 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from dataenginex.api import HealthChecker
 from dataenginex.middleware.logging_config import configure_logging
 from dataenginex.middleware.metrics import get_metrics
 
@@ -33,19 +31,14 @@ logger = structlog.get_logger()
 
 
 class EchoRequest(BaseModel):
-    """Echo request body."""
-
     message: str
 
 
 class EchoResponse(BaseModel):
-    """Echo response body."""
-
     echo: str
 
 
 def create_app() -> FastAPI:
-    """Build and configure the DEX FastAPI application."""
     configure_logging(log_level="INFO", json_logs=False)
 
     app = FastAPI(
@@ -54,17 +47,13 @@ def create_app() -> FastAPI:
         description="Example DEX API instance",
     )
 
-    checker = HealthChecker()
-
     @app.get("/")
     def root() -> dict[str, str]:
         return {"service": "dataenginex", "status": "running"}
 
     @app.get("/health")
-    async def health() -> dict[str, object]:
-        components = await checker.check_all()
-        status = checker.overall_status(components)
-        return {"status": status.value}
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
 
     @app.post("/echo", response_model=EchoResponse)
     def echo(body: EchoRequest) -> EchoResponse:

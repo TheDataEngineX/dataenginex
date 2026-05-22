@@ -17,11 +17,9 @@ from dataenginex.config.defaults import (
     DEFAULT_DRIFT_THRESHOLD,
     DEFAULT_ENGINE,
     DEFAULT_FEATURE_STORE,
-    DEFAULT_HOST,
     DEFAULT_LLM_MODEL,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_LOG_LEVEL,
-    DEFAULT_PORT,
     DEFAULT_RETRIEVAL_STRATEGY,
     DEFAULT_SERVING_ENGINE,
     DEFAULT_TRACKER,
@@ -231,26 +229,6 @@ class SecopsConfig(BaseModel):
     audit: AuditConfig = Field(default_factory=AuditConfig)
 
 
-# --- Server ---
-
-
-class AuthConfig(BaseModel):
-    """Server authentication configuration."""
-
-    enabled: bool = False
-    secret_key: str | None = None
-    algorithm: str = "HS256"
-
-
-class ServerConfig(BaseModel):
-    """API server configuration."""
-
-    host: str = DEFAULT_HOST
-    port: int = DEFAULT_PORT
-    auth: AuthConfig = Field(default_factory=AuthConfig)
-    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
-
-
 # --- Observability ---
 
 
@@ -276,5 +254,4 @@ class DexConfig(BaseModel):
     ml: MlConfig = Field(default_factory=MlConfig)
     ai: AiConfig = Field(default_factory=AiConfig)
     secops: SecopsConfig = Field(default_factory=SecopsConfig)
-    server: ServerConfig = Field(default_factory=ServerConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)

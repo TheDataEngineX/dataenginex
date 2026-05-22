@@ -1,5 +1,52 @@
 # Release Notes
 
+## v1.2.0 — 2026-05-21
+
+### Highlights
+
+- **Pure library architecture** — `dataenginex` is now a pure Python library with no bundled HTTP server. Applications (`dex-studio`, your own FastAPI/Flask app) own the server layer entirely. `DexEngine` is the single entry point; it loads `dex.yaml`, inits `DexStore`, and wires all backends.
+- **`DexEngine` as application entry point** — single object instantiation hides all wiring complexity. Replaces the old `dex serve` pattern.
+- **`DexStore` persistence** — single DuckDB file at `.dex/store.duckdb` next to `dex.yaml`. Self-contained per project.
+- **`auth` extras removed** — `pyjwt`, `ldap3`, and `cryptography` removed from the package. Auth/RBAC lives in application layers (`dex-studio`) only.
+- **Module clarification** — `ml/` is classical ML (training, registry, serving, drift); `ai/` is LLM/agents/RAG/vectorstore; `orchestration/` is background scheduling.
+- **`*.duckdb` excluded from git** — generated store files are project-local and should not be committed.
+
+### Breaking changes
+
+- `dex serve` CLI command removed. Start your own ASGI app with `uvicorn` instead.
+- `dataenginex[auth]` extra removed. Install `pyjwt` / `ldap3` directly in your application if needed.
+- `dataenginex.api` no longer contains auth/RBAC/SCIM/LDAP. It now provides HTTP error types and response models only.
+
+### Migration
+
+```python
+# Before (old server pattern)
+# dex serve --config dex.yaml
+
+# After — own the server layer
+from dataenginex.engine import DexEngine
+from fastapi import FastAPI
+import uvicorn
+
+engine = DexEngine("dex.yaml")
+app = FastAPI()
+
+@app.get("/health")
+def health():
+    return engine.health()
+
+uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+### Verification checklist
+
+1. `uv run poe lint` — Ruff checks clean
+1. `uv run poe typecheck` — mypy strict, 0 errors
+1. `uv run poe test` — all tests pass
+1. `uv run --with fastapi --with uvicorn python examples/02_api_quickstart.py` — server starts, `/health` returns `{"status":"healthy"}`
+
+______________________________________________________________________
+
 ## v1.1.1 — 2026-05-07
 
 ### Highlights

@@ -5,7 +5,9 @@
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Unified Data + ML + AI framework. One `dex.yaml` defines your entire pipeline — from data ingestion through ML training to AI agents. Self-hosted, config-driven, production-ready.
+Unified Data + ML + AI **library**. One `dex.yaml` defines your entire project — from data ingestion through ML training to AI agents. Self-hosted, config-driven, production-ready.
+
+`dataenginex` is a **pure Python library**. It has no HTTP server. Your application owns the server layer.
 
 ______________________________________________________________________
 
@@ -13,18 +15,22 @@ ______________________________________________________________________
 
 ```bash
 pip install dataenginex
-dex init my-project --template full-stack
-dex validate dex.yaml
-dex serve
+```
+
+```python
+from dataenginex.engine import DexEngine
+
+engine = DexEngine("dex.yaml")          # loads config, inits DuckDB store
+engine.run_pipeline("clean_users")      # execute a pipeline
+models = engine.model_registry.list_models()
 ```
 
 ```bash
 # Development
 git clone https://github.com/TheDataEngineX/DEX && cd DEX
-uv run poe setup
 uv run poe check-all          # lint + typecheck + tests
-uv run poe dev                 # dev server on http://localhost:17000
-uv run dex serve --config examples/dex.yaml
+dex validate dex.yaml         # validate a config file
+dex version                   # show version + environment
 ```
 
 ______________________________________________________________________
@@ -33,23 +39,18 @@ ______________________________________________________________________
 
 ```
 dex.yaml
-  ├── data:       CSV/Parquet/DuckDB → transforms → quality checks
-  ├── ml:         Experiment tracking → training → serving → drift detection
-  ├── ai:         LLM providers → retrieval (BM25/dense/hybrid) → agents
-  ├── server:     FastAPI with auth, metrics, rate limiting
-  └── observability: structlog + Prometheus metrics + tracing
+  ├── data:           CSV/Parquet/DuckDB → transforms → quality checks
+  ├── ml:             Experiment tracking → training → serving → drift detection
+  ├── ai:             LLM providers → retrieval (BM25/dense/hybrid) → agents
+  └── observability:  structlog + Prometheus metrics
 ```
 
-**Opinionated defaults, swappable backends.** Everything works out of the box with built-in implementations. Swap any layer for industry tools via extras:
+**Opinionated defaults, swappable backends.** Everything works out of the box with
+built-in implementations. Swap any layer for industry tools via optional extras:
 
 ```bash
-pip install dataenginex[dagster]     # Dagster orchestration
-pip install dataenginex[mlflow]      # MLflow tracking
-pip install dataenginex[agents]      # LangGraph agent runtime
-pip install dataenginex[vectors]     # Qdrant/LanceDB vector stores
-pip install dataenginex[embeddings]  # sentence-transformers + ONNX
-pip install dataenginex[spark]       # PySpark transforms
-pip install dataenginex[all]         # Everything
+pip install "dataenginex[cloud]"          # S3 + GCS storage backends
+pip install "dataenginex[observability]"  # Langfuse LLM tracing
 ```
 
 ______________________________________________________________________
@@ -59,18 +60,22 @@ ______________________________________________________________________
 ```
 dataenginex/
 ├── src/dataenginex/
-│   ├── cli/                # dex CLI (validate, version, init, serve)
+│   ├── cli/                # dex CLI (validate, version, init)
 │   ├── config/             # dex.yaml schema, loader, env var resolution
-│   ├── core/               # Exceptions, interfaces (10 Base* ABCs), registry
-│   ├── api/                # FastAPI app, auth (JWT), rate limiting, health
-│   ├── data/               # Connectors, schema registry, profiler
-│   ├── ml/                 # Training, model registry, serving, drift
-│   ├── middleware/         # Structured logging, Prometheus metrics, tracing
-│   ├── lakehouse/          # Catalog, partitioning, storage
-│   ├── warehouse/          # SQL/Spark transforms, lineage
+│   ├── core/               # Exceptions, interfaces (Base* ABCs), registry
+│   ├── engine.py           # DexEngine — single entry point for applications
+│   ├── store.py            # DexStore — DuckDB-backed persistence (.dex/store.duckdb)
+│   ├── api/                # HTTP helpers: error types, response models (no server)
+│   ├── data/               # Connectors, schema registry, profiler, pipeline runner
+│   ├── ml/                 # Classical ML: training, registry, serving, drift
+│   ├── ai/                 # LLM providers, agents, RAG, vectorstore, observability
+│   ├── orchestration/      # DriftScheduler, background workers
+│   ├── middleware/         # structlog config, Prometheus metrics (library use)
+│   ├── lakehouse/          # Catalog, partitioning, storage backends
+│   ├── warehouse/          # SQL transforms, lineage
 │   └── plugins/            # Plugin system (entry-point discovery)
 │
-├── examples/               # Runnable examples + dex.yaml
+├── examples/               # Runnable examples + dex.yaml templates
 ├── tests/                  # Unit + integration tests
 ├── docs/                   # MkDocs documentation
 └── pyproject.toml          # Package config (version source of truth)
@@ -80,19 +85,18 @@ ______________________________________________________________________
 
 ## Architecture
 
-**Config-Driven Pipeline:**
-
 ```
-dex.yaml → load + validate → register backends → execute pipeline
-                                    │
-              ┌─────────────────────┼─────────────────────┐
-              │                     │                     │
-         Data Layer            ML Layer             AI Layer
-     (DuckDB built-in)    (builtin tracker)    (Ollama + DuckDB)
-     (Dagster extra)       (MLflow extra)      (LangGraph extra)
+dex.yaml → DexEngine.__init__
+               │
+               ├── config/   load + validate → DexConfig
+               ├── store/    DexStore (.dex/store.duckdb)
+               ├── data/     register sources + pipelines
+               ├── ml/       model registry + serving
+               └── ai/       LLM providers + agents
 ```
 
-**Backend Registry Pattern:** Every subsystem has a `Base*` ABC + `BackendRegistry`. Built-in backends implement the ABC. Extras implement the same interface. Conformance tests verify both.
+**Backend Registry Pattern:** Every subsystem has a `Base*` ABC + `BackendRegistry`.
+Built-in backends work out of the box. Extras implement the same interface.
 
 **Tech Stack:**
 
@@ -101,11 +105,11 @@ dex.yaml → load + validate → register backends → execute pipeline
 | Data Engine | DuckDB | PySpark |
 | Orchestration | croniter scheduler | Dagster |
 | ML Tracking | JSON-based tracker | MLflow |
-| Model Serving | Built-in HTTP | BentoML |
-| LLM | Ollama / LiteLLM | Any OpenAI-compatible |
-| Vector Store | DuckDB VSS | Qdrant, LanceDB |
-| Retrieval | BM25 + Dense + Hybrid | ColBERT (RAGatouille) |
-| API | FastAPI + Uvicorn | — |
+| Model Serving | Built-in predictor | — |
+| LLM | Ollama / LiteLLM / vLLM | Any OpenAI-compatible |
+| Vector Store | DuckDB VSS | Qdrant |
+| Retrieval | BM25 + Dense + Hybrid | — |
+| Persistence | DuckDB (`.dex/store.duckdb`) | — |
 | Logging | structlog | — |
 
 ______________________________________________________________________
@@ -117,7 +121,6 @@ See [docs/development.md](docs/development.md) for full setup.
 ```bash
 uv run poe check-all         # lint + typecheck + tests
 uv run poe lint-fix          # auto-fix lint issues
-uv run poe dev               # dev server with hot-reload (port 17000)
 uv run poe test-cov          # tests + coverage report
 ```
 
@@ -127,13 +130,12 @@ ______________________________________________________________________
 
 | Guide | Description |
 |-------|-------------|
-| [Docs Hub](docs/docs-hub.md) | Complete index |
-| [Architecture](docs/ARCHITECTURE.md) | System design |
-| [Development](docs/DEVELOPMENT.md) | Local setup and workflow |
-| [Contributing](docs/CONTRIBUTING.md) | Code style and PR process |
+| [Quickstart](docs/quickstart.md) | Get running in 5 minutes |
+| [Architecture](docs/architecture.md) | System design and patterns |
+| [Development](docs/development.md) | Local setup and workflow |
 | [API Reference](docs/api-reference/index.md) | Auto-generated module docs |
 
-> Docs: [docs.thedataenginex.org](https://docs.thedataenginex.org) | Community standards at [org level](https://github.com/TheDataEngineX/.github)
+> Docs: [docs.thedataenginex.org](https://docs.thedataenginex.org)
 
 ______________________________________________________________________
 
@@ -141,10 +143,12 @@ ______________________________________________________________________
 
 ```
 TheDataEngineX/
-├── dataenginex    — Core framework (this repo)
-├── dex-studio     — Web UI (NiceGUI) — single pane of glass
+├── dataenginex    — Core library (this repo, PyPI)
+├── dex-studio     — Web UI (FastAPI + Jinja2) — single pane of glass
 └── infradex       — Terraform + Helm + K3s deployment
 ```
+
+dex-studio imports `dataenginex` directly — no HTTP server required.
 
 ______________________________________________________________________
 
@@ -154,4 +158,4 @@ MIT License. See [LICENSE](LICENSE).
 
 ______________________________________________________________________
 
-**Version**: [![PyPI](https://img.shields.io/pypi/v/dataenginex)](https://pypi.org/project/dataenginex/) | **License**: MIT | **Python**: 3.13+ | **Docs**: [docs.thedataenginex.org](https://docs.thedataenginex.org)
+**Version**: [![PyPI](https://img.shields.io/pypi/v/dataenginex)](https://pypi.org/project/dataenginex/) | **License**: MIT | **Python**: 3.13+

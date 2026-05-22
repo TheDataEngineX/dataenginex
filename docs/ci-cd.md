@@ -31,10 +31,12 @@ DEX is a pure Python library published to PyPI. The pipeline is:
 
 ```mermaid
 graph LR
-    Dev[Developer] --> PR[Create PR to main]
-    PR --> CI[CI: Lint/Test/Security]
+    Dev[Developer] --> PR[Create PR to dev]
+    PR --> CI[CI: Quality/Test/Security]
     CI --> Review[Code Review]
-    Review --> MergeMain[Merge to main]
+    Review --> MergeDev[Merge to dev]
+    MergeDev --> PRMain[PR dev → main]
+    PRMain --> MergeMain[Merge to main]
     MergeMain --> Tag[Push tag vX.Y.Z]
     Tag --> Release[release.yml]
     Release --> Build[Build wheel + sdist]
@@ -65,9 +67,11 @@ The **root `pyproject.toml`** defines the package and test config:
 - `[tool.hatch.build.targets.wheel] packages = ["src/dataenginex"]`
 - Dependency groups: `dev` (required), `data` (PySpark), `notebook` (pandas), `ml` (sentence-transformers)
 
-**CI workflow** (`ci.yml`) runs in a single job (`poe lint` → `poe typecheck` → `pytest`):
+**CI workflow** (`ci.yml`) runs two sequential jobs:
 
-- Single `ci` job: `uv sync --all-extras` + `poe lint` + `poe typecheck` + `pytest --cov`
+- `quality` job: `uv sync --group ml` + `poe quality` (lint + imports-check + typecheck + security audit)
+- `test` job (needs quality): `poe test-cov-core` — pytest with coverage, uploads to Codecov
+- `test-compat` job: weekly schedule only — Python 3.11/3.12 compatibility matrix
 - `concurrency: cancel-in-progress: true` — stale runs cancelled on new push
 
 ### Release Automation
@@ -87,49 +91,34 @@ ______________________________________________________________________
 
 **Jobs**:
 
-### 1. Lint and Test
-
-Runs code quality checks and test suite:
+### 1. Code Quality (`quality` job)
 
 ```bash
-# Linting
-uv run poe lint
-
-# Tests with coverage
-uv run poe test-cov
+uv run poe quality  # lint + imports-check + typecheck + pip-audit
 ```
 
-**Requirements**: All checks must pass before merge
+**Requirements**: Must pass before the `test` job starts.
 
-### 2. Security Scans
-
-Runs in parallel via [`.github/workflows/security.yml`](https://github.com/TheDataEngineX/dataenginex/blob/main/.github/workflows/security.yml):
-
-- **CodeQL**: Static analysis for security vulnerabilities
-- **Semgrep**: OWASP Top 10 and best practice checks
-
-**Results**: Available in GitHub Security tab
-
-### 3. Integration Test (Optional)
-
-Optional job for full dependency coverage (PySpark, Airflow, Pandas):
-
-**Trigger**:
-
-- Manual: `gh workflow run ci.yml`
-- Label: Add `full-test` label to pull request
-
-**What it does**:
+### 2. Tests (`test` job)
 
 ```bash
-# Installs all dependency groups
-uv sync --group dev --group data --group notebook
-
-# Runs full test suite (may take longer)
-uv run poe test-cov
+uv run poe test-cov-core  # pytest --cov, coverage uploaded to Codecov
 ```
 
-**Use case**: Validate changes to data pipelines, ML models, or when adding new dependencies to `data` or `notebook` groups.
+Coverage threshold: 80%. Results uploaded to Codecov with `flags: dataenginex`.
+
+### 3. Python Compatibility (`test-compat` job)
+
+Runs on a **weekly schedule** only (not on every PR). Tests against Python 3.11 and 3.12 to catch compatibility regressions before they affect users on older versions.
+
+### 4. Security Scans
+
+Runs via the shared reusable workflow at [`.github/workflows/security.yml`](https://github.com/TheDataEngineX/.github/blob/main/.github/workflows/security.yml):
+
+- **Trivy**: Misconfig and secret scan — results uploaded to GitHub Security tab; HIGH/CRITICAL misconfiguration gate blocks the job
+- **CodeQL**: Static analysis — handled by GitHub's default setup (results in Security tab)
+
+**Results**: Available in the GitHub Security tab.
 
 ______________________________________________________________________
 
@@ -183,9 +172,11 @@ PyPI does not support deleting releases, but you can:
 1. Publish a patch release with the fix:
 
    ```bash
-   # Bump version in pyproject.toml (e.g., 0.6.1)
+   # The pre-commit hook auto-bumps the patch version on commit
    git commit -m "fix: revert breaking change"
    git push origin main
+   git tag v<new-patch>
+   git push origin v<new-patch>
    ```
 
 ### Rollback a Git Tag
@@ -235,14 +226,13 @@ ______________________________________________________________________
 
 - [x] Automated CI with lint, test, type checks
 - [x] Security scanning (CodeQL, Semgrep)
-- [x] Automated PyPI release on version bump
+- [x] Automated PyPI release on tag push
 - [x] Package validation (wheel + twine check)
 - [x] GitHub Pages documentation deployment
 
 ### Future Enhancements 🚀
 
 - [ ] **E2E smoke tests**: Post-release validation (install from PyPI and run examples)
-- [ ] **SonarCloud integration**: Code quality gates
 - [ ] **Slack notifications**: Release status updates
 - [ ] **Release notes**: Auto-generated from commits
 - [ ] **Canary releases**: TestPyPI smoke test before PyPI promotion
@@ -331,8 +321,8 @@ ______________________________________________________________________
 
 | Workflow | Trigger | Purpose | File |
 | --- | --- | --- | --- |
-| **CI** | `push main/dev`, PRs to main/dev | Lint, test, type-check | [ci.yml](.github/workflows/ci.yml) |
-| **Security** | `push main/dev`, PRs to main/dev | CodeQL + Semgrep scans | [security.yml](.github/workflows/security.yml) |
+| **CI** | `push main/dev`, PRs to main/dev | Code quality (`poe quality`) + tests + weekly compat | [ci.yml](.github/workflows/ci.yml) |
+| **Security** | `push main/dev`, PRs to main/dev | Trivy (misconfig + secrets) + CodeQL (default setup) | [security.yml](.github/workflows/security.yml) |
 | **Release** | Push tag `v*.*.*` to main | Build → PyPI (trusted publishing) + GitHub Release + CycloneDX SBOM | [release.yml](.github/workflows/release.yml) |
 
 ### Local Commands

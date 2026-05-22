@@ -12,7 +12,7 @@ LLM to build a full retrieve-augment-generate pipeline.
 
 Example::
 
-    from dataenginex.ml.vectorstore import QdrantBackend, RAGPipeline
+    from dataenginex.ai.vectorstore import QdrantBackend, RAGPipeline
 
     backend = QdrantBackend(url="http://localhost:6333", collection="dex_docs")
     rag = RAGPipeline(store=backend)
@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 if TYPE_CHECKING:
-    from dataenginex.ml.llm import LLMProvider, LLMResponse
+    from dataenginex.ai.llm import LLMProvider, LLMResponse
 
 logger = structlog.get_logger()
 
@@ -373,7 +373,7 @@ class SentenceTransformerEmbedder:
 
     Then pass an instance as ``embed_fn`` to :class:`RAGPipeline`::
 
-        from dataenginex.ml.vectorstore import RAGPipeline, SentenceTransformerEmbedder
+        from dataenginex.ai.vectorstore import RAGPipeline, SentenceTransformerEmbedder
 
         embedder = SentenceTransformerEmbedder()          # all-MiniLM-L6-v2
         rag = RAGPipeline(embed_fn=embedder, dimension=384)

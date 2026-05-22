@@ -98,18 +98,17 @@ git push origin feat/issue-XXX-description
 
 DEX has a single version source:
 
-- **dataenginex version**: root `pyproject.toml` — managed automatically by release-please
+- **dataenginex version**: root `pyproject.toml` — managed automatically by the `release.yml` workflow
 
 ```bash
-# Releases are fully automated via release-please.
-# Push conventional commits to main; release-please creates the Release PR.
-gh pr list --label "autorelease: pending"   # check for pending Release PR
-gh run list --workflow=pypi-publish.yml     # monitor PyPI publish after merge
+# Releases are automated via release.yml.
+# Push a v{X.Y.Z} tag to main; release.yml builds, publishes to PyPI, and creates a GitHub Release.
+gh run list --workflow=release.yml          # monitor release workflow
 ```
 
-On `main`, release-please creates Git tags/releases automatically:
+On `main`, pushing a `v{X.Y.Z}` tag triggers:
 
-- `v{version}` tag + GitHub Release from `release-please.yml` → triggers `pypi-publish.yml`
+- `release.yml` → builds the package, publishes to PyPI, creates GitHub Release
 
 ## Local Data Setup
 

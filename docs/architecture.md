@@ -2,9 +2,11 @@
 
 ## Overview
 
-**DataEngineX** is a unified Data + ML + AI framework that orchestrates industry tools through a single config-driven interface. One `dex.yaml` defines the entire pipeline.
+**DataEngineX** is a unified Data + ML + AI **library** that wires industry tools through a
+single config-driven interface. One `dex.yaml` defines the entire project.
 
-**Design principle:** Opinionated defaults that work out of the box. Swap any layer for industry tools via extras.
+**Design principle:** Pure Python library — no HTTP server bundled. Your application (DEX Studio,
+your own FastAPI/Flask app, a script) imports `dataenginex` and owns the server layer.
 
 ## Architecture
 
@@ -18,8 +20,14 @@ dex.yaml
 │  Layering: base + overlay (dex.prod.yaml)                │
 └────────────────────┬────────────────────────────────────┘
                      │
-        ┌────────────┼────────────┐
-        ▼            ▼            ▼
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│                    DexEngine                             │
+│  Single entry point — loads config, inits backends       │
+│  Exposes: run_pipeline, model_registry, agents, store    │
+└──────┬──────────────┬──────────────┬────────────────────┘
+       │              │              │
+       ▼              ▼              ▼
 ┌──────────────┐ ┌──────────┐ ┌──────────────┐
 │  Data Layer  │ │ ML Layer │ │   AI Layer   │
 │              │ │          │ │              │
@@ -27,23 +35,18 @@ dex.yaml
 │ Transforms   │ │ Training │ │ Retriever    │
 │ Quality      │ │ Serving  │ │ Vector Store │
 │ Orchestrator │ │ Drift    │ │ Agent Runtime│
-│ Feature Store│ │          │ │              │
+│ Feature Store│ │ Metrics  │ │ Memory       │
 └──────┬───────┘ └────┬─────┘ └──────┬───────┘
        │              │              │
        └──────────────┼──────────────┘
                       ▼
         ┌─────────────────────────┐
-        │    Backend Registry     │
-        │  Base* ABC + registry   │
-        │  Built-in or extras     │
+        │       DexStore          │
+        │  DuckDB — .dex/store.   │
+        │  duckdb (project-local) │
+        │  pipeline_runs · lineage│
+        │  model_artifacts · etc. │
         └─────────────────────────┘
-                      │
-        ┌─────────────┼─────────────┐
-        ▼             ▼             ▼
-   Built-in       [dagster]     [mlflow]
-   (DuckDB,       (Dagster      (MLflow
-    croniter,      orchestration) tracking)
-    JSON tracker)
 ```
 
 ## Core Patterns
@@ -68,17 +71,37 @@ class CsvConnector(BaseConnector):
     ...
 ```
 
+### DexEngine — Application Entry Point
+
+`DexEngine` is the single object applications instantiate. It:
+
+- Loads and validates `dex.yaml`
+- Initialises `DexStore` (creates `.dex/store.duckdb` next to the config file)
+- Registers data sources, pipelines, ML trackers, AI providers, agents
+- Exposes domain methods: `run_pipeline`, `source_schema`, `warehouse_layers`, etc.
+
+```python
+from dataenginex.engine import DexEngine
+
+engine = DexEngine("dex.yaml")
+engine.run_pipeline("clean_users")
+```
+
+### DexStore — Persistence
+
+Single DuckDB file at `.dex/store.duckdb` (project-local, next to `dex.yaml`).
+Tables: `pipeline_runs`, `lineage_events`, `model_artifacts`, `quality_runs`,
+`audit_log`, `ai_memory`, `ai_episodes`, `catalog_entries`.
+
 ### Config System
 
-- Single `dex.yaml` → Pydantic validation → typed `DexConfig` object
+- Single `dex.yaml` → Pydantic validation → typed `DexConfig`
 - Env var interpolation: `${VAR:-default}`
 - Overlay layering: `dex.yaml` + `dex.prod.yaml`
 - Cross-reference validation (pipeline sources, dependencies)
 - Only `project.name` is required; everything else has defaults
 
 ### Exception Hierarchy
-
-All framework exceptions inherit from `DataEngineXError`:
 
 ```
 DataEngineXError
@@ -91,60 +114,65 @@ DataEngineXError
 └── AgentError → LLMProviderError
 ```
 
+## Module Map
+
+| Module | Purpose |
+|--------|---------|
+| `engine.py` | `DexEngine` — application entry point |
+| `store.py` | `DexStore` — DuckDB persistence layer |
+| `config/` | Schema, loader, env resolution |
+| `core/` | ABCs, registry, exceptions |
+| `cli/` | `dex` CLI (validate, version, init) |
+| `api/` | HTTP helpers: error types, response models |
+| `data/` | Connectors, pipeline runner, quality, profiler |
+| `ml/` | Classical ML: training, registry, serving, drift |
+| `ai/` | LLM, agents, RAG, vectorstore, memory, observability |
+| `orchestration/` | DriftScheduler, background tasks |
+| `middleware/` | structlog config, Prometheus metrics |
+| `lakehouse/` | Storage backends, catalog, partitioning |
+| `warehouse/` | SQL transforms, lineage |
+| `plugins/` | Entry-point discovery |
+
 ## Tech Stack
 
 | Component | Built-in | Extra |
 |-----------|----------|-------|
 | Data Engine | DuckDB | PySpark (`[spark]`) |
-| Orchestration | croniter scheduler | Dagster (`[dagster]`) |
-| ML Tracking | JSON-based | MLflow (`[mlflow]`) |
-| Model Serving | Built-in HTTP | BentoML (`[serving]`) |
-| LLM Provider | Ollama / LiteLLM | Any OpenAI-compatible |
-| Vector Store | DuckDB VSS | Qdrant, LanceDB (`[vectors]`) |
-| Retrieval | BM25 + Dense + Hybrid | ColBERT (`[colbert]`) |
-| Embeddings | — (requires opt-in) | sentence-transformers (`[embeddings]`) |
-| Feature Store | DuckDB-based | Feast (`[feast]`) |
-| API Framework | FastAPI + Uvicorn | — |
+| Orchestration | croniter scheduler | — |
+| ML Tracking | JSON-based | MLflow (`[tracking]`) |
+| Model Serving | Built-in predictor | — |
+| LLM Provider | Ollama / vLLM | LiteLLM (install separately) |
+| Vector Store | DuckDB VSS | Qdrant |
+| Retrieval | BM25 + Dense + Hybrid | — |
+| Persistence | DuckDB | — |
 | Logging | structlog | — |
 | Config | Pydantic + YAML | — |
-| CLI | Click + Rich | — |
-
-## Deployment Tiers
-
-| Tier | Target | Infrastructure |
-|------|--------|---------------|
-| 1 | Laptop | `pip install dataenginex && dex serve` |
-| 2 | VPS | `docker compose up` on Hetzner (~15/mo) |
-| 3 | Production | K3s/EKS/GKE with Helm + ArgoCD |
-
-## Ecosystem
-
-```
-TheDataEngineX/
-├── DEX            — Core framework (PyPI: dataenginex)
-├── dex-studio     — Web UI (NiceGUI) — single pane of glass
-└── infradex       — Terraform + Helm + K3s deployment
-```
-
-- **Container images:** `ghcr.io/thedataenginex/dex`
-- **Docs:** `docs.thedataenginex.org` (Cloudflare Pages)
-- **Domain:** `thedataenginex.org`
+| CLI | Click | — |
+| LLM Observability | — | Langfuse (`[observability]`) |
+| Cloud Storage | — | S3/GCS/BigQuery (`[cloud]`) |
 
 ## Key Design Decisions
 
 | ID | Decision | Rationale |
 |----|----------|-----------|
-| AD1 | FastAPI is core dependency | Required by API, health, metrics — not optional |
-| AD2 | structlog only (no loguru) | One logging standard across entire codebase |
-| AD3 | DuckDB single-writer via asyncio queue | Serialized writes avoid WAL conflicts |
-| AD4 | SQLite for tracker, DuckDB for data | Different access patterns need different engines |
-| AD5 | Embeddings require explicit opt-in | sentence-transformers + ONNX are 500MB+; never auto-download |
-| AD6 | Project isolation via separate DuckDB files | Each `dex init` project gets its own `.dex/` directory |
-| AD7 | Python 3.13+ | 3.13 is minimum supported; full type parameter syntax + improved error messages |
-| AD8 | Graceful degradation | Missing extras produce clear error messages, not crashes |
+| AD1 | Pure library — no bundled HTTP server | Applications own the server layer; library stays lean |
+| AD2 | DexEngine as single entry point | One object to instantiate; hides wiring complexity |
+| AD3 | DuckDB for persistence | Embedded, zero-ops, single file next to dex.yaml |
+| AD4 | structlog only | One logging standard across the entire codebase |
+| AD5 | LiteLLM install separately | It pins `python-dotenv==1.0.1` which conflicts |
+| AD6 | Embeddings require explicit opt-in | sentence-transformers + ONNX are 500 MB+; never auto-download |
+| AD7 | Project isolation via separate DuckDB files | Each project's `.dex/store.duckdb` is self-contained |
+| AD8 | Python 3.13+ | Full type parameter syntax, improved error messages |
+| AD9 | `ai/` for LLM/agents, `ml/` for classical ML | Clear domain separation |
 
-______________________________________________________________________
+## Ecosystem
 
-**Spec:** See `docs/superpowers/specs/2026-03-21-dataenginex-v2-system-redesign.md` for full design.
+```
+TheDataEngineX/
+├── dataenginex    — Core library (PyPI: dataenginex)
+├── dex-studio     — Web UI (FastAPI + Jinja2) — single pane of glass
+└── infradex       — Terraform + Helm + K3s deployment
+```
 
-**Last Updated:** 2026-03-21
+- **Container images:** `ghcr.io/thedataenginex/dex`
+- **Docs:** `docs.thedataenginex.org`

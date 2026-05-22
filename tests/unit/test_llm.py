@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from dataenginex.ml.llm import (
+from dataenginex.ai.llm import (
     ChatMessage,
     LLMConfig,
     LLMProvider,

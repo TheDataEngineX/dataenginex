@@ -93,7 +93,6 @@ class TestDexConfig:
         with pytest.raises(ValidationError):
             DexConfig()  # type: ignore[call-arg]
 
-    def test_server_defaults(self) -> None:
+    def test_no_server_field(self) -> None:
         cfg = DexConfig(project=ProjectConfig(name="srv"))
-        assert cfg.server.host == "0.0.0.0"  # noqa: S104
-        assert cfg.server.port == 17000
+        assert not hasattr(cfg, "server")

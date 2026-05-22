@@ -56,7 +56,8 @@ def _check_completeness(
     cols = [row[0] for row in conn.execute(f"DESCRIBE {table}").fetchall()]
     total_nulls = 0
     for c in cols:
-        row = conn.execute(f"SELECT count(*) FROM {table} WHERE {c} IS NULL").fetchone()
+        qc = f'"{c}"'
+        row = conn.execute(f"SELECT count(*) FROM {table} WHERE {qc} IS NULL").fetchone()
         total_nulls += int(row[0]) if row else 0
     total_cells = total_rows * len(cols)
     score = (total_cells - total_nulls) / total_cells if total_cells > 0 else 1.0
@@ -79,7 +80,7 @@ def _check_uniqueness(
     result: QualityResult,
 ) -> None:
     """Check that specified columns have no duplicates."""
-    key_cols = ", ".join(columns)
+    key_cols = ", ".join(f'"{c}"' for c in columns)
     distinct_row = conn.execute(f"SELECT count(DISTINCT ({key_cols})) FROM {table}").fetchone()
     distinct_count: int = int(distinct_row[0]) if distinct_row else 0
     score = distinct_count / total_rows if total_rows > 0 else 1.0
@@ -124,7 +125,7 @@ def _check_schema(
 
         if not spec.nullable:
             null_row = conn.execute(
-                f"SELECT count(*) FROM {table} WHERE {spec.name} IS NULL"
+                f'SELECT count(*) FROM {table} WHERE "{spec.name}" IS NULL'
             ).fetchone()
             null_count = int(null_row[0]) if null_row else 0
             if null_count > 0:

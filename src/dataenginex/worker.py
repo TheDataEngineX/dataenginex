@@ -120,9 +120,9 @@ async def run_agent(ctx: dict[str, Any], agent_name: str, message: str) -> dict[
         config = _load_config()
         import dataenginex.ai.agents.builtin  # noqa: F401 — trigger registration
         from dataenginex.ai.agents import agent_registry
+        from dataenginex.ai.llm import get_llm_provider
         from dataenginex.ai.tools import tool_registry
         from dataenginex.ai.tools.builtin import register_builtin_tools
-        from dataenginex.ml.llm import get_llm_provider
 
         register_builtin_tools()
         if agent_name not in config.ai.agents:

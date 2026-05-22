@@ -1,43 +1,71 @@
 # dataenginex
 
-Unified Data + ML + AI framework. Config-driven, self-hosted, production-ready.
+Unified Data + ML + AI **library**. Config-driven, self-hosted, production-ready.
+
+`dataenginex` is a pure Python library — no HTTP server. Your application owns the server layer.
 
 ## Install
 
 ```bash
-# Core (DuckDB, FastAPI, structlog, Pydantic, Click, Rich)
+# Core (DuckDB, structlog, Pydantic, Click, arq, asyncpg, qdrant-client)
 pip install dataenginex
 
-# With optional extras
-pip install dataenginex[dagster]      # Dagster orchestration
-pip install dataenginex[mlflow]       # MLflow experiment tracking
-pip install dataenginex[agents]       # LangGraph agent runtime
-pip install dataenginex[vectors]      # Qdrant + LanceDB vector stores
-pip install dataenginex[embeddings]   # sentence-transformers + ONNX
-pip install dataenginex[spark]        # PySpark transforms
-pip install dataenginex[cloud]        # S3 + GCS storage backends
-pip install dataenginex[all]          # Everything
+# Optional extras
+pip install "dataenginex[cloud]"          # S3 + GCS + BigQuery storage backends
+pip install "dataenginex[observability]"  # Langfuse LLM call tracing
 ```
+
+> **LiteLLM:** Install separately — it pins `python-dotenv==1.0.1` which conflicts
+> with dataenginex's `python-dotenv>=1.2.2`.
+> ```bash
+> pip install 'litellm>=1.83.3' --no-deps
+> ```
 
 ## Submodules
 
-| Module | Requires Extra | Description |
-|--------|---------------|-------------|
-| `dataenginex.config` | — | dex.yaml schema, loader, env var resolution, layering |
-| `dataenginex.core` | — | Exceptions, interfaces (10 Base* ABCs), backend registry |
-| `dataenginex.cli` | — | `dex` CLI (validate, version, init, serve) |
-| `dataenginex.api` | — | FastAPI app, auth (JWT), health, rate limiting |
-| `dataenginex.data` | — | Connectors, schema registry, profiler |
-| `dataenginex.ml` | — | Training, model registry, serving, drift detection |
-| `dataenginex.middleware` | — | Structured logging, Prometheus metrics, tracing |
-| `dataenginex.lakehouse` | optional `[cloud]` | Storage backends (local, S3, GCS), catalog |
-| `dataenginex.warehouse` | — | SQL/Spark transforms, lineage |
-| `dataenginex.plugins` | — | Plugin system (entry-point discovery) |
+| Module | Description |
+|--------|-------------|
+| `dataenginex.engine` | `DexEngine` — single entry point; loads config, inits store, wires all backends |
+| `dataenginex.store` | `DexStore` — DuckDB-backed persistence (`.dex/store.duckdb`) |
+| `dataenginex.config` | `dex.yaml` schema, loader, env var resolution, layering |
+| `dataenginex.core` | Exceptions, `Base*` ABCs, `BackendRegistry` |
+| `dataenginex.cli` | `dex` CLI (`validate`, `version`, `init`) |
+| `dataenginex.api` | HTTP helpers: error types, response models (no server bundled) |
+| `dataenginex.data` | Connectors, pipeline runner, schema registry, profiler |
+| `dataenginex.ml` | Classical ML: training, model registry, serving, drift detection |
+| `dataenginex.ai` | LLM providers, agents, RAG, vectorstore, memory, observability |
+| `dataenginex.orchestration` | `DriftScheduler`, background scheduling |
+| `dataenginex.middleware` | structlog config, Prometheus metrics |
+| `dataenginex.lakehouse` | Storage backends (local, S3, GCS), catalog, partitioning |
+| `dataenginex.warehouse` | SQL transforms, lineage tracking |
+| `dataenginex.plugins` | Entry-point plugin discovery |
 
 ## Quick Usage
 
 ```python
-# Config system
+from pathlib import Path
+from dataenginex.engine import DexEngine
+
+# Load config and initialize all backends
+engine = DexEngine(Path("dex.yaml"))
+
+# Data
+engine.run_pipeline("clean_users")
+sources = list(engine.config.data.sources.keys())
+
+# ML
+models = engine.model_registry.list_models()
+result = engine.model_registry.predict("churn_model", features)
+
+# AI
+response = engine.agents["assistant"].chat("summarize the latest run")
+
+# Persistence (DuckDB)
+runs = engine.store.list_pipeline_runs(limit=10)
+```
+
+```python
+# Config system only
 from dataenginex.config import load_config
 cfg = load_config(Path("dex.yaml"))
 
@@ -45,15 +73,12 @@ cfg = load_config(Path("dex.yaml"))
 from dataenginex.core.interfaces import BaseConnector
 from dataenginex.core.registry import BackendRegistry
 
-# Exceptions
-from dataenginex.core.exceptions import DataEngineXError, BackendNotInstalledError
-
 # ML
-from dataenginex.ml import ModelRegistry
+from dataenginex.ml import ModelRegistry, SklearnTrainer
 
-# CLI
-# dex validate dex.yaml
-# dex version
+# AI
+from dataenginex.ai.llm import get_llm_provider
+from dataenginex.ai.vectorstore import VectorStoreBackend
 ```
 
 ## Source and Docs
