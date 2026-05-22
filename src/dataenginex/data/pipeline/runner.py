@@ -33,7 +33,7 @@ from dataenginex.data.transforms.sql import (  # noqa: F401
     CastTransform as _CastTransform,
 )
 from dataenginex.middleware.domain_metrics import quality_gate_evaluations_total
-from dataenginex.warehouse.lineage import PersistentLineage
+from dataenginex.warehouse.lineage import LineageBackend
 
 logger = structlog.get_logger()
 
@@ -75,7 +75,7 @@ class PipelineRunner:
         config: DexConfig,
         data_dir: Path | None = None,
         project_dir: Path | None = None,
-        lineage: PersistentLineage | None = None,
+        lineage: LineageBackend | None = None,
     ) -> None:
         self._config = config
         self._data_dir = data_dir or Path(".dex/lakehouse")
@@ -219,12 +219,14 @@ class PipelineRunner:
         if not cfg.quality:
             return
         q = cfg.quality
+        # Resolve _data placeholder to the actual current table, same as SQLTransform does
+        resolved_sql = q.custom_sql.replace("_data", table) if q.custom_sql else None
         result = check_quality(
             conn,
             table,
             completeness=q.completeness,
             uniqueness=q.uniqueness,
-            custom_sql=q.custom_sql,
+            custom_sql=resolved_sql,
         )
         outcome = "pass" if result.passed else "fail"
         for gate, configured in (

@@ -85,12 +85,11 @@ class TestLoadConfig:
         base = dedent("""\
             project:
               name: my-app
-            server:
-              port: 17000
+              version: "1.0"
         """)
         overlay = dedent("""\
-            server:
-              port: 8080
+            project:
+              version: "2.0"
         """)
         (tmp_path / "dex.yaml").write_text(base)
         (tmp_path / "dex.prod.yaml").write_text(overlay)
@@ -100,7 +99,7 @@ class TestLoadConfig:
             overlay=tmp_path / "dex.prod.yaml",
         )
         assert cfg.project.name == "my-app"
-        assert cfg.server.port == 8080
+        assert cfg.project.version == "2.0"
 
 
 class TestValidateConfig:

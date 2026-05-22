@@ -1,32 +1,21 @@
 """
-DataEngineX (DEX) — Core framework for data engineering projects.
+DataEngineX (DEX) — unified Data + ML + AI library.
 
-Public API surface. Import from top-level or from subpackages:
+Quick start::
 
-    from dataenginex import __version__
-    from dataenginex.core import MedallionArchitecture, DataLayer, QualityGate
-    from dataenginex.data import DataConnector, DataProfiler, SchemaRegistry
-    from dataenginex.lakehouse import DataCatalog, ParquetStorage
-    from dataenginex.ml import ModelRegistry, SklearnTrainer, DriftDetector
-    from dataenginex.ml import RAGPipeline, InMemoryBackend, VectorStoreBackend
-    from dataenginex.ml import OllamaProvider, MockProvider, LLMProvider
-    from dataenginex.warehouse import PersistentLineage, TransformPipeline
+    from dataenginex import DexEngine
 
-Optional (requires ``pip install dataenginex[api]``):
+    engine = DexEngine("path/to/dex.yaml")
+    engine.run_pipeline("ingest")
+    engine.close()
 
-    from dataenginex.api import HealthChecker, AuthMiddleware, paginate
-    from dataenginex.middleware import configure_logging, configure_tracing
+Subpackage imports::
 
-Submodules:
-    api        – Reusable API utilities (auth, health, errors, pagination, rate limiting)
-               Requires ``dataenginex[api]`` extra.
-    core       – Schemas, validators, medallion architecture, quality gate
-    data       – Data connectors, profiler, schema registry
-    lakehouse  – Storage backends, data catalog, partitioning
-    middleware – Logging, metrics, tracing, request middleware
-               Requires ``dataenginex[api]`` extra.
-    ml         – ML training, model registry, drift, serving, vectorstore, LLM
-    warehouse  – Transforms, persistent lineage tracking
+    from dataenginex.config import load_config
+    from dataenginex.ai import LLMProvider, get_llm_provider, RAGPipeline
+    from dataenginex.ml import ModelRegistry, DriftDetector, SklearnTrainer
+    from dataenginex.lakehouse import DataCatalog
+    from dataenginex.warehouse import PersistentLineage
 """
 
 from __future__ import annotations
@@ -38,48 +27,70 @@ try:
 except PackageNotFoundError:
     __version__ = "1.1.1"
 
-# Re-export core symbols that don't require optional dependencies
-from dataenginex.core import DataLayer, MedallionArchitecture, QualityGate
-from dataenginex.data import DataConnector, DataProfiler, SchemaRegistry
-from dataenginex.lakehouse import DataCatalog, ParquetStorage, StorageBackend
-from dataenginex.ml import (
-    DriftDetector,
+# Primary entry point
+# AI (LLM / agents / RAG)
+from dataenginex.ai import (
     InMemoryBackend,
     LLMProvider,
     MockProvider,
-    ModelRegistry,
     OllamaProvider,
     RAGPipeline,
-    SklearnTrainer,
     VectorStoreBackend,
+    get_llm_provider,
 )
+
+# Core
+from dataenginex.core import DataLayer, MedallionArchitecture, QualityGate
+
+# Data
+from dataenginex.data import DataConnector, DataProfiler, SchemaRegistry
+from dataenginex.engine import DexBackend, DexEngine
+
+# Lakehouse
+from dataenginex.lakehouse import DataCatalog, ParquetStorage, StorageBackend
+
+# ML (classical)
+from dataenginex.ml import (
+    DriftDetector,
+    ModelRegistry,
+    SklearnTrainer,
+)
+
+# Persistence
+from dataenginex.store import DexStore
 from dataenginex.warehouse import PersistentLineage, TransformPipeline
 
 __all__ = [
     "__version__",
-    # core
+    # Entry point
+    "DexEngine",
+    "DexBackend",
+    "DexStore",
+    # Core
     "DataLayer",
     "MedallionArchitecture",
     "QualityGate",
-    # data
+    # Data
     "DataConnector",
     "DataProfiler",
     "SchemaRegistry",
-    # lakehouse
+    # Lakehouse
     "DataCatalog",
     "ParquetStorage",
     "StorageBackend",
-    # ml
+    # ML
     "DriftDetector",
+    "ModelRegistry",
+    "SklearnTrainer",
+    # AI
+    "get_llm_provider",
     "InMemoryBackend",
     "LLMProvider",
     "MockProvider",
-    "ModelRegistry",
     "OllamaProvider",
     "RAGPipeline",
-    "SklearnTrainer",
     "VectorStoreBackend",
-    # warehouse
+    # Warehouse
     "PersistentLineage",
     "TransformPipeline",
 ]

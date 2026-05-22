@@ -5,81 +5,106 @@ Get a DataEngineX pipeline running in under five minutes.
 ## 1. Install
 
 ```bash
+pip install dataenginex
+# or from source:
 git clone https://github.com/TheDataEngineX/dataenginex && cd dataenginex
-uv sync            # Install Python deps
+uv sync
 ```
 
-## 2. Run the Dev Server
+## 2. Create a config file
 
-```bash
-uv run poe dev     # Starts FastAPI on http://localhost:17000
+`dex.yaml`:
+
+```yaml
+project:
+  name: my-first-pipeline
+  version: "0.1.0"
+
+data:
+  sources:
+    raw_users:
+      type: csv
+      path: data/users.csv
+  pipelines:
+    clean_users:
+      source: raw_users
+      transforms:
+        - type: filter
+          condition: "age > 0"
+      destination: silver.users
 ```
 
-Verify it works:
+## 3. Validate
 
 ```bash
-curl http://localhost:17000/health          # → {"status":"healthy"}
-curl http://localhost:17000/ | python3 -m json.tool
+dex validate dex.yaml
 ```
 
-## 3. Try an Example
+## 4. Use DexEngine in your application
 
-Each example is a standalone script — no server required.
+```python
+from dataenginex.engine import DexEngine
 
-```bash
-# Minimal pipeline (Bronze → Silver → Gold)
-uv run python examples/01_hello_pipeline.py
+engine = DexEngine("dex.yaml")
 
-# Quality gate checks
-uv run python examples/03_quality_gate.py
+# Run a pipeline
+result = engine.run_pipeline("clean_users")
 
-# ML model training & registration
-uv run python examples/04_ml_training.py
+# Query sources
+schema = engine.source_schema("raw_users")
+sample = engine.source_sample("raw_users", limit=5)
 
-# RAG pipeline demo
-uv run python examples/05_rag_demo.py
+# Inspect warehouse
+layers = engine.warehouse_layers()
+tables = engine.warehouse_tables("silver")
 
-# LLM provider quickstart
-uv run python examples/06_llm_quickstart.py
+# Check history
+runs = engine.store.list_pipeline_runs(limit=10)
 ```
 
-All examples are in the [`examples/`](https://github.com/TheDataEngineX/dataenginex/tree/main/examples) directory with full descriptions in `examples/GUIDE.md`.
+## 5. Run Examples
 
-## 4. Run Tests
+Each example is a standalone script:
 
 ```bash
-uv run poe test       # Run the full test suite
+uv run python examples/01_hello_pipeline.py   # Minimal pipeline
+uv run python examples/03_quality_gate.py     # Quality checks
+uv run python examples/04_ml_training.py      # ML training + registry
+uv run python examples/05_rag_demo.py         # RAG pipeline
+uv run python examples/06_llm_quickstart.py   # LLM providers
+
+# Build your own FastAPI app on top (see example 02)
+uv run --with fastapi --with uvicorn python examples/02_api_quickstart.py
+```
+
+## 6. Run Tests
+
+```bash
+uv run poe test       # Full test suite
 uv run poe lint       # Lint with Ruff
-uv run poe typecheck  # mypy strict (dataenginex core)
-uv run poe check-all  # All of the above in one command
+uv run poe typecheck  # mypy strict
+uv run poe check-all  # All of the above
 ```
 
 ## Next Steps
 
-- [Development Guide](development.md) — full setup, editor config, and workflow
-- [Architecture](architecture.md) — medallion layers, API design, ML lifecycle
+- [Architecture](architecture.md) — medallion layers, backend registry, DexEngine
+- [Development Guide](development.md) — editor config and workflow
 - [API Reference](api-reference/index.md) — auto-generated module docs
-- `examples/` directory — full list of runnable examples (01–10)
+- `examples/` directory — full list of runnable examples
 
 ---
 
-## CareerDEX + DEX Studio
+## DEX Studio
 
-CareerDEX is the reference domain app built on DEX — job matching, salary prediction, AI agents. Use it to see the full stack in action via DEX Studio.
+DEX Studio is the optional web UI that loads a `dex.yaml` and provides a single
+control plane for Data / ML / AI / System. It uses `dataenginex` directly as a library
+— no separate server process needed.
 
 ```bash
-# Clone both repos
-git clone https://github.com/TheDataEngineX/careerdex
-git clone https://github.com/TheDataEngineX/dex-studio
-
-# Install
-cd careerdex && uv sync && cd ..
-cd dex-studio && uv sync
-
-# Launch Studio with the CareerDEX config
-uv run dex-studio /path/to/careerdex/careerdex.yaml
+pip install dex-studio
+dex-studio                               # serve on http://localhost:7860
+dex-studio --config /path/to/dex.yaml   # open a specific project
 ```
 
-Open [http://localhost:7860](http://localhost:7860) — full Data / ML / AI / System dashboard loaded from `careerdex.yaml`, no separate server needed.
-
-See the [CareerDEX README](https://github.com/TheDataEngineX/careerdex) for data setup and all launch options.
+See [dex-studio](https://github.com/TheDataEngineX/dex-studio) for details.
