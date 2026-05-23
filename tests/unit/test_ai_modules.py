@@ -551,6 +551,30 @@ class TestAgentExecutor:
 
 
 class TestSandbox:
+    @pytest.fixture(autouse=True)
+    def _suppress_experimental_warning(self) -> Any:
+        """Sandbox is marked experimental — silence the warning for tests
+        that focus on behavior, not the warning itself."""
+        import warnings
+
+        from dataenginex.ai.runtime.sandbox import ExperimentalFeatureWarning
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ExperimentalFeatureWarning)
+            yield
+
+    def test_experimental_warning_fires_on_first_use(self) -> None:
+        """First instantiation in a fresh module state emits the warning."""
+        import warnings
+
+        import dataenginex.ai.runtime.sandbox as sb_mod
+
+        sb_mod._experimental_warned = False
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", sb_mod.ExperimentalFeatureWarning)
+            sb_mod.Sandbox()
+        assert any(issubclass(w.category, sb_mod.ExperimentalFeatureWarning) for w in caught)
+
     def test_run_python(self) -> None:
         from dataenginex.ai.runtime.sandbox import Sandbox
 
