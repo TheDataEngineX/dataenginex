@@ -838,8 +838,6 @@ name = "dataenginex"
 version = "1.1.2"
 source = { editable = "." }
 dependencies = [
-    { name = "arq" },
-    { name = "asyncpg" },
     { name = "click" },
     { name = "croniter" },
     { name = "duckdb" },
@@ -849,8 +847,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
-    { name = "qdrant-client" },
-    { name = "redis" },
     { name = "structlog" },
 ]
 
@@ -862,6 +858,15 @@ cloud = [
 ]
 observability = [
     { name = "langfuse" },
+]
+postgres = [
+    { name = "asyncpg" },
+]
+qdrant = [
+    { name = "qdrant-client" },
+]
+queue = [
+    { name = "arq" },
 ]
 
 [package.dev-dependencies]
@@ -902,8 +907,8 @@ tracking = [
 
 [package.metadata]
 requires-dist = [
-    { name = "arq", specifier = ">=0.28.0" },
-    { name = "asyncpg", specifier = ">=0.31.0" },
+    { name = "arq", marker = "extra == 'queue'", specifier = ">=0.28.0" },
+    { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.31.0" },
     { name = "boto3", marker = "extra == 'cloud'", specifier = ">=1.43.7" },
     { name = "click", specifier = ">=8.3.3" },
     { name = "croniter", specifier = ">=6.2.2" },
@@ -917,11 +922,10 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "qdrant-client", specifier = ">=1.18.0" },
-    { name = "redis", specifier = ">=5.3.1" },
+    { name = "qdrant-client", marker = "extra == 'qdrant'", specifier = ">=1.18.0" },
     { name = "structlog", specifier = ">=25.5.0" },
 ]
-provides-extras = ["cloud", "observability"]
+provides-extras = ["cloud", "observability", "postgres", "qdrant", "queue"]
 
 [package.metadata.requires-dev]
 data = [
