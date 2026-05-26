@@ -250,7 +250,10 @@ class QdrantBackend(VectorStoreBackend):
                 )
             logger.info("qdrant backend ready", url=url, collection=collection)
         except ImportError:
-            logger.warning("qdrant-client not installed — falling back to InMemoryBackend")
+            logger.warning(
+                "qdrant-client not installed — falling back to InMemoryBackend. "
+                "Install via: pip install 'dataenginex[qdrant]'"
+            )
             self._fallback = InMemoryBackend(dimension=dimension)
         except Exception as exc:
             logger.warning("qdrant connection failed — falling back", error=str(exc))

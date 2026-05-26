@@ -20,13 +20,6 @@ dependencies = [
     "structlog>=25.5.0",
     # Data formats
     "pyarrow>=23.0.1",
-    # Async job queue (ARQ — Redis-backed, single dep)
-    "arq>=0.28.0",
-    "redis>=5.3.1",
-    # Async PostgreSQL (SCIM persistence, lineage, model registry)
-    "asyncpg>=0.31.0",
-    # Qdrant vector DB client
-    "qdrant-client>=1.18.0",
 ]
 
 [project.scripts]
@@ -43,6 +36,20 @@ cloud = [
 #     pip install 'litellm>=1.83.3' --no-deps
 # or manage via a dedicated venv. The provider is lazy-imported; DEX runs fine
 # without it.
+# Optional integrations — install only what you need:
+#   pip install 'dataenginex[postgres]'  — PostgresLineage, asyncpg-backed persistence
+#   pip install 'dataenginex[qdrant]'    — Qdrant vector store backend
+#   pip install 'dataenginex[queue]'     — ARQ async job queue (pulls in redis)
+postgres = [
+    "asyncpg>=0.31.0",
+]
+qdrant = [
+    "qdrant-client>=1.18.0",
+]
+queue = [
+    "arq>=0.28.0",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
