@@ -1,46 +1,34 @@
 # dataenginex
 
-Unified Data + ML + AI **library**. Config-driven, self-hosted, production-ready.
+The Python library that powers [DEX Studio](https://github.com/TheDataEngineX/dex-studio) — an open-source, self-hosted, local-first Data + ML + AI workbench. Use the library directly when you want code, not a UI.
 
-`dataenginex` is a pure Python library — no HTTP server. Your application owns the server layer.
+> **Pre-1.0 status.** `0.4.0` is honest about that. See the [scope reset CHANGELOG](https://github.com/TheDataEngineX/dex/blob/main/CHANGELOG.md) for the rationale.
 
 ## Install
 
 ```bash
-# Core (DuckDB, structlog, Pydantic, Click, arq, asyncpg, qdrant-client)
-pip install dataenginex
-
-# Optional extras
-pip install "dataenginex[cloud]"          # S3 + GCS + BigQuery storage backends
-pip install "dataenginex[observability]"  # Langfuse LLM call tracing
+pip install dataenginex                    # lean base — DuckDB, structlog, Pydantic, Click, pyarrow
 ```
 
-> **LiteLLM:** Install separately — it pins `python-dotenv==1.0.1` which conflicts
-> with dataenginex's `python-dotenv>=1.2.2`.
+Optional integrations — install only what you need:
+
+```bash
+pip install 'dataenginex[postgres]'        # asyncpg-backed lineage, persistence
+pip install 'dataenginex[qdrant]'          # Qdrant vector store backend
+pip install 'dataenginex[queue]'           # ARQ async job queue (pulls redis)
+pip install 'dataenginex[cloud]'           # S3, GCS, BigQuery storage backends
+pip install 'dataenginex[ml]'              # scikit-learn, xgboost, sentence-transformers
+pip install 'dataenginex[tracking]'        # MLflow integration
+pip install 'dataenginex[data]'            # PySpark, databricks-cli
+```
+
+> **LiteLLM:** install separately — it pins `python-dotenv==1.0.1` which conflicts with our `>=1.2.2`:
+>
 > ```bash
 > pip install 'litellm>=1.83.3' --no-deps
 > ```
 
-## Submodules
-
-| Module | Description |
-|--------|-------------|
-| `dataenginex.engine` | `DexEngine` — single entry point; loads config, inits store, wires all backends |
-| `dataenginex.store` | `DexStore` — DuckDB-backed persistence (`.dex/store.duckdb`) |
-| `dataenginex.config` | `dex.yaml` schema, loader, env var resolution, layering |
-| `dataenginex.core` | Exceptions, `Base*` ABCs, `BackendRegistry` |
-| `dataenginex.cli` | `dex` CLI (`validate`, `version`, `init`) |
-| `dataenginex.api` | HTTP helpers: error types, response models (no server bundled) |
-| `dataenginex.data` | Connectors, pipeline runner, schema registry, profiler |
-| `dataenginex.ml` | Classical ML: training, model registry, serving, drift detection |
-| `dataenginex.ai` | LLM providers, agents, RAG, vectorstore, memory, observability |
-| `dataenginex.orchestration` | `DriftScheduler`, background scheduling |
-| `dataenginex.middleware` | structlog config, Prometheus metrics |
-| `dataenginex.lakehouse` | Storage backends (local, S3, GCS), catalog, partitioning |
-| `dataenginex.warehouse` | SQL transforms, lineage tracking |
-| `dataenginex.plugins` | Entry-point plugin discovery |
-
-## Quick Usage
+## Quick start
 
 ```python
 from pathlib import Path
@@ -49,40 +37,70 @@ from dataenginex.engine import DexEngine
 # Load config and initialize all backends
 engine = DexEngine(Path("dex.yaml"))
 
-# Data
+# Data — run pipelines defined in dex.yaml
 engine.run_pipeline("clean_users")
-sources = list(engine.config.data.sources.keys())
 
-# ML
+# ML — train, register, predict
 models = engine.model_registry.list_models()
 result = engine.model_registry.predict("churn_model", features)
 
-# AI
-response = engine.agents["assistant"].chat("summarize the latest run")
+# AI — chat with an agent over your data
+response = engine.agents["assistant"].chat("summarise the latest pipeline run")
 
-# Persistence (DuckDB)
+# Persistence — query DuckDB-backed history
 runs = engine.store.list_pipeline_runs(limit=10)
 ```
 
-```python
-# Config system only
-from dataenginex.config import load_config
-cfg = load_config(Path("dex.yaml"))
+Smaller surfaces — use only what you need:
 
-# Core interfaces + registry
+```python
+from dataenginex.config import load_config
+cfg = load_config("dex.yaml")
+
 from dataenginex.core.interfaces import BaseConnector
 from dataenginex.core.registry import BackendRegistry
 
-# ML
-from dataenginex.ml import ModelRegistry, SklearnTrainer
-
-# AI
+from dataenginex.ml import ModelRegistry
 from dataenginex.ai.llm import get_llm_provider
 from dataenginex.ai.vectorstore import VectorStoreBackend
 ```
 
-## Source and Docs
+## Submodules
 
-- Repository: https://github.com/TheDataEngineX/DEX
-- Documentation: https://docs.thedataenginex.org
-- Release notes: `CHANGELOG.md`
+| Module | Description |
+| --- | --- |
+| `dataenginex.engine` | `DexEngine` — single entry point; loads config, inits store, wires backends |
+| `dataenginex.store` | `DexStore` — DuckDB-backed persistence (`.dex/store.duckdb`) |
+| `dataenginex.config` | `dex.yaml` schema, loader, env-var resolution |
+| `dataenginex.core` | Exceptions, `Base*` ABCs, `BackendRegistry` |
+| `dataenginex.cli` | `dex` CLI (`validate`, `version`, `init`) |
+| `dataenginex.data` | Connectors (CSV, Parquet, DuckDB, HTTP, …), pipeline runner, schema registry |
+| `dataenginex.ml` | Classical ML — training, model registry, serving, drift |
+| `dataenginex.ai` | LLM providers, agents, RAG, vector store, memory, observability |
+| `dataenginex.orchestration` | Scheduler, background workers |
+| `dataenginex.middleware` | structlog config, Prometheus metrics |
+| `dataenginex.lakehouse` | Storage backends, catalog, partitioning |
+| `dataenginex.warehouse` | Transforms, lineage tracking |
+| `dataenginex.secops` | PII detection, masking, audit logging |
+| `dataenginex.api` | Pydantic response models (no HTTP server bundled) |
+| `dataenginex.plugins` | Entry-point plugin discovery |
+
+## Want the UI?
+
+`dataenginex` is the engine. The web UI lives in a separate repo:
+
+```bash
+git clone https://github.com/TheDataEngineX/dex-studio && cd dex-studio
+docker compose up         # open http://localhost:7860
+```
+
+DEX Studio imports `dataenginex` directly — no separate API server.
+
+## Links
+
+- Source: [github.com/TheDataEngineX/dex](https://github.com/TheDataEngineX/dex)
+- Docs: [docs.thedataenginex.org](https://docs.thedataenginex.org)
+- Roadmap: [docs/docs/roadmap/DESIGN-2026.md](https://github.com/TheDataEngineX/docs/blob/main/docs/roadmap/DESIGN-2026.md)
+- ADRs: [docs/adr/](https://github.com/TheDataEngineX/docs/tree/main/adr)
+- Issues: [github.com/TheDataEngineX/dex/issues](https://github.com/TheDataEngineX/dex/issues)
+- License: MIT
