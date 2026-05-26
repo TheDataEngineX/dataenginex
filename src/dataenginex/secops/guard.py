@@ -105,6 +105,35 @@ class PrivacyGuardConfig:
     strategies: dict[PIIType, MaskingStrategy] = field(default_factory=dict)
     local_targets: frozenset[str] = _DEFAULT_LOCAL_TARGETS
 
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> PrivacyGuardConfig:
+        """Build a config from a loose dict (e.g. straight from ``dex.yaml``).
+
+        String values in ``strategies`` and ``local_targets`` are converted
+        to the appropriate enum / frozenset types. Unknown PII types or
+        masking strategies raise ``ValueError`` from the enum constructors.
+        """
+        raw_strategies = data.get("strategies") or {}
+        strategies: dict[PIIType, MaskingStrategy] = {}
+        if isinstance(raw_strategies, dict):
+            for k, v in raw_strategies.items():
+                strategies[PIIType(k)] = MaskingStrategy(v)
+
+        raw_targets = data.get("local_targets")
+        if raw_targets is None:
+            local_targets = _DEFAULT_LOCAL_TARGETS
+        else:
+            local_targets = frozenset(str(t) for t in raw_targets)  # type: ignore[arg-type]
+
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            allow_local=bool(data.get("allow_local", True)),
+            block_on_detect=bool(data.get("block_on_detect", False)),
+            log_all_outbound=bool(data.get("log_all_outbound", True)),
+            strategies=strategies,
+            local_targets=local_targets,
+        )
+
 
 @dataclass(frozen=True)
 class GuardResult:

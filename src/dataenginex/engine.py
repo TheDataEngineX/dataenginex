@@ -176,6 +176,11 @@ class DexEngine:
         self.checkpoint_mgr: Any = None
         self.sandbox: Any = None
         self.model_router: Any = None
+        # PrivacyGuard must initialise even if the AI layer fails — it's a
+        # security primitive consumed independently (e.g. by dex-studio's
+        # /privacy/* UI). Initialise before _init_ai_layer so the guard is
+        # always available, then wire it into the router inside the AI init.
+        self._init_privacy_guard()
         self._init_ai_layer()
 
         # Plugin discovery
@@ -771,24 +776,54 @@ class DexEngine:
         except Exception:
             logger.warning("AI layer init failed")
 
+    def _init_privacy_guard(self) -> None:
+        """Build a ``PrivacyGuard`` from ``dex.yaml secops.guard``.
+
+        Stored on ``self.privacy_guard``. Used by ``_init_model_router`` to
+        wrap every LLM provider, and exposed for downstream consumers
+        (dex-studio's ``/privacy/*`` UI, custom integrations).
+        """
+        from dataenginex.secops import (
+            AuditLogger,
+            PrivacyGuard,
+            PrivacyGuardConfig,
+        )
+
+        guard_dict = self.config.secops.guard.model_dump()
+        guard_cfg = PrivacyGuardConfig.from_dict(guard_dict)
+
+        audit_logger = getattr(self, "audit", None)
+        if not isinstance(audit_logger, AuditLogger):
+            audit_logger = None
+
+        self.privacy_guard = PrivacyGuard(
+            config=guard_cfg,
+            audit_logger=audit_logger,
+        )
+
     def _init_model_router(self) -> None:
         import os
 
-        from dataenginex.ai.routing.router import ModelRouter
+        from dataenginex.ai.routing.guarded import GuardedProvider
+        from dataenginex.ai.routing.router import BaseProvider, ModelRouter
 
-        providers: dict[str, Any] = {}
+        def _wrap(name: str, provider: BaseProvider) -> BaseProvider:
+            """Wrap *provider* with the guard. Local targets bypass at call time."""
+            return GuardedProvider(provider, self.privacy_guard, target=name)
+
+        providers: dict[str, BaseProvider] = {}
         if os.environ.get("ANTHROPIC_API_KEY"):
             from dataenginex.ai.routing.anthropic import AnthropicProvider
 
-            providers["anthropic"] = AnthropicProvider()
+            providers["anthropic"] = _wrap("anthropic", AnthropicProvider())
         if os.environ.get("OPENAI_API_KEY"):
             from dataenginex.ai.routing.openai import OpenAIProvider
 
-            providers["openai"] = OpenAIProvider()
+            providers["openai"] = _wrap("openai", OpenAIProvider())
 
         from dataenginex.ai.routing.ollama import OllamaProvider
 
-        providers.setdefault("ollama", OllamaProvider())
+        providers.setdefault("ollama", _wrap("ollama", OllamaProvider()))
 
         if providers:
             self.model_router = ModelRouter(providers)

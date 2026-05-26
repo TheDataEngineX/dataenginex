@@ -222,11 +222,41 @@ class AuditConfig(BaseModel):
     destination: str = "file"  # file, database
 
 
+class GuardConfig(BaseModel):
+    """Outbound LLM call guard (``PrivacyGuard``) configuration.
+
+    Wraps every external LLM provider call with PII detection and either
+    masking or blocking. Local providers (Ollama, etc.) bypass guarding
+    by default since their data never leaves the machine.
+
+    Attributes:
+        enabled: Master switch. When ``False`` the guard logs once and
+            passes all prompts through unchanged.
+        allow_local: When ``True``, prompts to local providers bypass
+            scanning. Disable to scan local calls too (e.g. for audit-only).
+        block_on_detect: When ``True``, prompts containing PII raise
+            ``PrivacyBlocked`` instead of being masked.
+        log_all_outbound: Emit a structlog entry for every outbound call.
+        strategies: Map of PII type → masking strategy, e.g.
+            ``{"email": "hash", "ssn": "redact"}``. PII types absent from
+            this map fall back to the masker's default (``REDACT``).
+        local_targets: Provider names treated as local (bypass scan).
+    """
+
+    enabled: bool = True
+    allow_local: bool = True
+    block_on_detect: bool = False
+    log_all_outbound: bool = True
+    strategies: dict[str, str] = Field(default_factory=dict)
+    local_targets: list[str] = Field(default_factory=lambda: ["ollama", "local"])
+
+
 class SecopsConfig(BaseModel):
     """Security operations configuration."""
 
     pii: PiiConfig = Field(default_factory=PiiConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
+    guard: GuardConfig = Field(default_factory=GuardConfig)
 
 
 # --- Observability ---
