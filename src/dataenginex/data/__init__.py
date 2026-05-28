@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataenginex.data.connectors import connector_registry
 from dataenginex.data.connectors.csv import CsvConnector
 from dataenginex.data.connectors.duckdb import DuckDBConnector
+from dataenginex.data.connectors.parquet import ParquetConnector
 
 # Legacy API (backward-compatible)
 from dataenginex.data.connectors.legacy import (
@@ -41,6 +42,7 @@ __all__ = [
     # New
     "CsvConnector",
     "DuckDBConnector",
+    "ParquetConnector",
     "PipelineResult",
     "PipelineRunner",
     "QualityResult",
