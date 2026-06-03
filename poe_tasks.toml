@@ -81,9 +81,17 @@ sequence = ["uv-sync", "test-integration-core"]
 help     = "Run integration tests"
 
 [tool.poe.tasks.test-cov-core]
-# COVERAGE_PROCESS_START ensures coverage starts before collection-time imports.
+# `coverage run` starts measurement before any imports, ensuring module-level
+# code (Pydantic models, class defs, etc.) is correctly measured.  The env var
+# ensures subprocess coverage data is also captured (parallel mode).
 env  = {COVERAGE_PROCESS_START = "pyproject.toml"}
-cmd  = "pytest tests/ -v --cov=dataenginex --cov-append --cov-report=html --cov-report=xml:coverage.xml --cov-report=term-missing --cov-fail-under=80"
+shell = """
+  coverage run -m pytest tests/ -v && \
+  coverage combine && \
+  coverage html && \
+  coverage xml -o coverage.xml && \
+  coverage report --fail-under=80
+"""
 help = "Internal: tests with coverage, fails below 80% (no sync)"
 
 [tool.poe.tasks.test-cov]
