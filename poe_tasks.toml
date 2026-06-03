@@ -2,150 +2,161 @@
 executor.type = "uv"
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
+
 [tool.poe.tasks.setup]
 shell = "uv sync --all-extras --all-groups && uvx pre-commit install"
-help = "One-step setup: install all dependency groups and pre-commit hooks"
+help  = "Install all dependency groups and pre-commit hooks"
 
-# ── Development ───────────────────────────────────────────────────────────────
 [tool.poe.tasks.dev]
-cmd = "python examples/ecommerce/run_all.py"
-help = "Run the ShopMetrics ecommerce example — exercises every dataenginex feature"
+cmd  = "python examples/ecommerce/run_all.py"
+help = "Run the ShopMetrics ecommerce example"
 
-# ── Code Quality ──────────────────────────────────────────────────────────────
+# ── Quality ───────────────────────────────────────────────────────────────────
+
 [tool.poe.tasks.lint]
 shell = "ruff check src/ tests/"
-help = "Lint: check for errors and style violations"
+help  = "Lint: check errors and style"
 
 [tool.poe.tasks.lint-fix]
 shell = "ruff check --fix src/ tests/ && ruff format src/ tests/"
-help = "Lint: auto-fix violations and format code"
+help  = "Lint: auto-fix violations and format"
 
 [tool.poe.tasks.format]
 shell = "ruff format src/ tests/"
-help = "Format code with ruff"
+help  = "Format with ruff"
 
 [tool.poe.tasks.imports-check]
 shell = "ruff check --select I src/ tests/"
-help = "Check import ordering and formatting"
+help  = "Check import ordering"
 
 [tool.poe.tasks.typecheck]
-cmd = "mypy src/dataenginex/ --config-file=pyproject.toml --no-incremental"
+cmd  = "mypy src/dataenginex/ --config-file=pyproject.toml --no-incremental"
 help = "Run mypy strict type checking"
-env = { UV_PYTHON = "3.13", UV_PROJECT_ENVIRONMENT = ".venv" }
+env  = {UV_PYTHON = "3.13", UV_PROJECT_ENVIRONMENT = ".venv"}
 
 [tool.poe.tasks.security]
-# uv run pip-audit audits the project venv directly — no pip required.
-# GHSA-5239-wwwm-4pmq: pygments ReDoS — no fix released yet, revisit when patch available.
-cmd = "uv run pip-audit --progress-spinner off --ignore-vuln GHSA-5239-wwwm-4pmq"
+cmd  = "uv run pip-audit --progress-spinner off --ignore-vuln GHSA-5239-wwwm-4pmq"
 help = "Audit dependencies for known vulnerabilities"
 
 [tool.poe.tasks.actionlint]
-shell = "if command -v actionlint >/dev/null 2>&1; then actionlint .github/workflows/*.yml; elif command -v docker >/dev/null 2>&1; then docker run --rm -v \"$PWD\":/repo -w /repo rhysd/actionlint:latest actionlint .github/workflows/*.yml; else echo 'actionlint not found — skipping'; fi"
+shell = """
+if command -v actionlint >/dev/null 2>&1; then
+  actionlint .github/workflows/*.yml
+elif command -v docker >/dev/null 2>&1; then
+  docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:latest .github/workflows/*.yml
+else
+  echo 'actionlint not found — skipping'
+fi
+"""
 help = "Lint GitHub Actions workflow files"
 
 [tool.poe.tasks.quality]
 sequence = ["lint", "imports-check", "typecheck", "security"]
-help = "Run all code quality checks: lint, imports, types, security"
-
-[tool.poe.tasks.quality-fix]
-sequence = ["lint-fix"]
-help = "Auto-fix all fixable code quality issues (lint violations + formatting)"
+help     = "Run all quality checks: lint, imports, types, security"
 
 # ── Testing ───────────────────────────────────────────────────────────────────
+
 [tool.poe.tasks.test-core]
-cmd = "pytest tests/ -v --tb=short"
-help = "Internal: run all tests without dependency sync"
+cmd  = "pytest tests/ -v --tb=short"
+help = "Internal: run all tests (no sync)"
 
 [tool.poe.tasks.test]
 sequence = ["uv-sync", "test-core"]
-help = "Run all tests"
+help     = "Run all tests"
 
 [tool.poe.tasks.test-unit-core]
-cmd = "pytest tests/unit/ -v --tb=short"
-help = "Internal: run unit tests without dependency sync"
+cmd  = "pytest tests/unit/ -v --tb=short"
+help = "Internal: run unit tests (no sync)"
 
 [tool.poe.tasks.test-unit]
 sequence = ["uv-sync", "test-unit-core"]
-help = "Run unit tests only"
+help     = "Run unit tests"
 
 [tool.poe.tasks.test-integration-core]
-cmd = "pytest tests/integration/ -v --tb=short"
-help = "Internal: run integration tests without dependency sync"
+cmd  = "pytest tests/integration/ -v --tb=short"
+help = "Internal: run integration tests (no sync)"
 
 [tool.poe.tasks.test-integration]
 sequence = ["uv-sync", "test-integration-core"]
-help = "Run integration tests only"
+help     = "Run integration tests"
 
 [tool.poe.tasks.test-cov-core]
-cmd = "pytest tests/ -v --cov=dataenginex --cov-report=html --cov-report=xml:coverage.xml --cov-report=term-missing --cov-fail-under=80"
-help = "Internal: run tests with coverage without dependency sync (fails below 80%)"
+# `coverage run` starts measurement before any imports, ensuring module-level
+# code (Pydantic models, class defs, etc.) is correctly measured.  The env var
+# ensures subprocess coverage data is also captured (parallel mode).
+env  = {COVERAGE_PROCESS_START = "pyproject.toml"}
+shell = """
+  coverage run -m pytest tests/ -v && \
+  coverage combine && \
+  coverage html && \
+  coverage xml -o coverage.xml && \
+  coverage report --fail-under=80
+"""
+help = "Internal: tests with coverage, fails below 80% (no sync)"
 
 [tool.poe.tasks.test-cov]
 sequence = ["uv-sync", "test-cov-core"]
-help = "Run tests with coverage report (HTML + XML + terminal)"
+help     = "Run tests with coverage report (HTML + XML + terminal)"
 
 # ── Check Suites ──────────────────────────────────────────────────────────────
+
 [tool.poe.tasks.check-all-core]
 sequence = ["quality", "test-cov-core"]
-help = "Internal: run quality + coverage tests without dependency sync"
+help     = "Internal: quality + coverage (no sync)"
 
 [tool.poe.tasks.check-all]
 sequence = ["uv-sync", "check-all-core"]
-help = "Run full checks: quality gates + coverage tests"
-
-[tool.poe.tasks.check-all-managed]
-sequence = ["uv-sync-all", "check-all-core", "clean"]
-help = "Sync all deps, run full checks, then clean up"
+help     = "Full check: quality gates + coverage"
 
 # ── Docker ────────────────────────────────────────────────────────────────────
+
 [tool.poe.tasks.docker-build]
-cmd = "docker build -t dex:latest ."
+cmd  = "docker build -t dex:latest ."
 help = "Build Docker image"
 
 [tool.poe.tasks.docker-up]
-cmd = "docker compose up -d"
+cmd  = "docker compose up -d"
 help = "Start services with Docker Compose"
 
 [tool.poe.tasks.docker-down]
-cmd = "docker compose down"
+cmd  = "docker compose down"
 help = "Stop Docker Compose services"
 
 [tool.poe.tasks.docker-logs]
-cmd = "docker compose logs -f"
+cmd  = "docker compose logs -f"
 help = "View Docker Compose logs"
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
+
 [tool.poe.tasks.version]
 shell = "python3 -c \"import tomllib; t=tomllib.load(open('pyproject.toml','rb')); print(t['project']['version'])\""
-help = "Show current package version"
+help  = "Show current package version"
 
 [tool.poe.tasks.clean]
-shell = "find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; find . -type f -name '*.pyc' -delete 2>/dev/null; rm -rf .pytest_cache .mypy_cache .ruff_cache dist build *.egg-info 2>/dev/null; echo 'Cache and artifacts cleaned'"
-help = "Remove cache and build artifacts"
+shell = "rm -rf .pytest_cache .mypy_cache .ruff_cache dist build htmlcov .coverage* && find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; echo 'cleaned'"
+help  = "Remove cache and build artifacts"
 
 [tool.poe.tasks.uv-lock]
-cmd = "uv lock"
+cmd  = "uv lock"
 help = "Resolve and write uv.lock"
 
 [tool.poe.tasks.uv-sync]
-cmd = "uv sync --group ml"
+cmd  = "uv sync --group ml"
 help = "Sync dependencies from uv.lock (includes ml group)"
-env = { UV_PROJECT_ENVIRONMENT = ".venv" }
+env  = {UV_PROJECT_ENVIRONMENT = ".venv"}
 
 [tool.poe.tasks.uv-sync-all]
-cmd = "uv sync --all-groups"
-help = "Sync all dependency groups from uv.lock"
-env = { UV_PROJECT_ENVIRONMENT = ".venv" }
+cmd  = "uv sync --all-groups"
+help = "Sync all dependency groups"
+env  = {UV_PROJECT_ENVIRONMENT = ".venv"}
 
-# ── Local-only: requires sibling ../.github/ repo (never run in CI) ──────────
 [tool.poe.tasks.sync-claude-settings]
 shell = """
 if [[ ! -d ../.github ]]; then
-  echo "ERROR: ../.github repo not found. Run from within the DataEngineX workspace." >&2
-  exit 1
+  echo "ERROR: ../.github repo not found" >&2; exit 1
 fi
 mkdir -p .claude
 cp ../.github/.claude/settings.json .claude/settings.json
-echo "✓ .claude/settings.json synced from .github/.claude/settings.json"
+echo "synced .claude/settings.json"
 """
-help = "Sync shared Claude Code settings from canonical .github/.claude/settings.json"
+help = "Sync Claude Code settings from ../.github/.claude/settings.json"

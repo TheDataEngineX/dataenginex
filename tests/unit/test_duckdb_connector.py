@@ -37,3 +37,31 @@ class TestDuckDBConnector(ConnectorConformanceTests):
         conn.connect()
         conn.write([], table="empty")
         conn.disconnect()
+
+    def test_write_overwrites_existing_table(self, tmp_path) -> None:
+        conn = DuckDBConnector(database=str(tmp_path / "test.duckdb"))
+        conn.connect()
+        conn.write([{"x": 1}], table="t")
+        conn.write([{"x": 2}, {"x": 3}], table="t")
+        rows = conn.read(table="t")
+        assert len(rows) == 2, "second write must overwrite, not be silently dropped"
+        assert {r["x"] for r in rows} == {2, 3}
+        conn.disconnect()
+
+    def test_write_pyarrow_table(self, tmp_path) -> None:
+        import pyarrow as pa
+
+        conn = DuckDBConnector(database=str(tmp_path / "test.duckdb"))
+        conn.connect()
+        tbl = pa.Table.from_pylist([{"y": 10}, {"y": 20}])
+        conn.write(tbl, table="arrow_t")
+        rows = conn.read(table="arrow_t")
+        assert [r["y"] for r in rows] == [10, 20]
+        conn.disconnect()
+
+    def test_write_unsupported_type_raises(self, tmp_path) -> None:
+        conn = DuckDBConnector(database=str(tmp_path / "test.duckdb"))
+        conn.connect()
+        with pytest.raises(TypeError, match="Unsupported data type"):
+            conn.write("not a list", table="t")
+        conn.disconnect()

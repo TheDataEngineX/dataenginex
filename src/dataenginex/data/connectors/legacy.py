@@ -90,8 +90,6 @@ class DataConnector(ABC):
         self._connected_at: datetime | None = None
 
     # -- lifecycle -----------------------------------------------------------
-    # TODO(breaking): CsvConnector/DuckDBConnector implement these as sync methods,
-    # violating this async interface. Needs a coordinated fix across all subclasses.
 
     @abstractmethod
     async def connect(self) -> bool:

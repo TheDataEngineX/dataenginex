@@ -7,7 +7,7 @@ Get a DataEngineX pipeline running in under five minutes.
 ```bash
 pip install dataenginex
 # or from source:
-git clone https://github.com/TheDataEngineX/dataenginex && cd dataenginex
+git clone https://github.com/TheDataEngineX/dex && cd dex
 uv sync
 ```
 
@@ -59,7 +59,7 @@ layers = engine.warehouse_layers()
 tables = engine.warehouse_tables("silver")
 
 # Check history
-runs = engine.store.list_pipeline_runs(limit=10)
+runs = engine.store.get_pipeline_runs(None)[:10]
 ```
 
 ## 5. Run Examples
@@ -84,6 +84,51 @@ uv run poe test       # Full test suite
 uv run poe lint       # Lint with Ruff
 uv run poe typecheck  # mypy strict
 uv run poe check-all  # All of the above
+```
+
+## Spark and dbt sources
+
+Register a PySpark or dbt source with the `connection` dict:
+
+```python
+# PySpark source
+engine.add_source(
+    "ratings",
+    "spark",
+    connection={"master": "local[*]", "format": "parquet"},
+)
+
+# dbt source (runs `dbt run --select my_model`, reads the DuckDB target)
+engine.add_source(
+    "dbt_revenue",
+    "dbt",
+    connection={"project_dir": "/path/to/dbt_project", "model": "revenue", "target": "dev"},
+)
+```
+
+Install PySpark separately (`pip install pyspark`). dbt-core is CLI-only; install it globally.
+
+## PrivacyGuard
+
+Enable outbound-call interception and PII masking in `dex.yaml`:
+
+```yaml
+secops:
+  guard:
+    enabled: true
+    block_on_detect: false
+    strategies:
+      email: hash
+      ssn: redact
+  audit:
+    enabled: true
+    db_path: ".dex/audit.duckdb"
+```
+
+Access the audit log programmatically:
+
+```python
+events = engine.secops_audit.events   # list of AuditEvent
 ```
 
 ## Next Steps

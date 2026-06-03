@@ -1,7 +1,7 @@
 [project]
 name = "dataenginex"
-version = "1.1.2"
-description = "DataEngineX - Core framework for AI/ML/Data engineering projects"
+version = "0.4.0"
+description = "DataEngineX — open-source, self-hosted, local-first Data + ML + AI workbench library"
 authors = [
     {name = "Jay", email = "jayapal.myaka99@gmail.com"}
 ]
@@ -18,15 +18,7 @@ dependencies = [
     "httpx>=0.28.1",
     "prometheus-client>=0.25.0",
     "structlog>=25.5.0",
-    # Data formats
     "pyarrow>=23.0.1",
-    # Async job queue (ARQ — Redis-backed, single dep)
-    "arq>=0.28.0",
-    "redis>=5.3.1",
-    # Async PostgreSQL (SCIM persistence, lineage, model registry)
-    "asyncpg>=0.31.0",
-    # Qdrant vector DB client
-    "qdrant-client>=1.18.0",
 ]
 
 [project.scripts]
@@ -38,14 +30,11 @@ cloud = [
     "google-cloud-storage>=3.10.1",
     "google-cloud-bigquery>=3.41.0",
 ]
-# NOTE: litellm is NOT declared here because it pins python-dotenv==1.0.1, which
-# conflicts with our python-dotenv>=1.2.1. Install separately for LiteLLMProvider:
-#     pip install 'litellm>=1.83.3' --no-deps
-# or manage via a dedicated venv. The provider is lazy-imported; DEX runs fine
-# without it.
-observability = [
-    "langfuse>=4.5.1",
-]
+# litellm pins python-dotenv==1.0.1 — install separately if needed:
+#   pip install 'litellm>=1.83.3' --no-deps
+postgres = ["asyncpg>=0.31.0"]
+qdrant   = ["qdrant-client>=1.18.0"]
+queue    = ["arq>=0.28.0"]
 
 [dependency-groups]
 dev = [
@@ -79,11 +68,9 @@ ml = [
     "numpy>=2.4.4",
     "sentence-transformers>=5.5.1",
 ]
-# mlflow is in its own group — it pins pandas<3 which conflicts with notebook>=3.0
-# Install with: uv sync --group ml --group tracking
-tracking = [
-    "mlflow>=3.12.0",
-]
+# mlflow pins pandas<3 — install separately: uv sync --group ml --group tracking
+tracking = ["mlflow>=3.12.0"]
+
 [build-system]
 requires = ["hatchling>=1.29.0"]
 build-backend = "hatchling.build"
@@ -95,10 +82,11 @@ packages = ["src/dataenginex"]
 python-preference = "only-managed"
 default-groups = ["dev"]
 override-dependencies = [
-    # mlflow 3.12.0+ supports pandas 3.x but still has pandas<3 constraint
-    # Override to allow pandas>=3.0 (verified working via mlflow#22372)
+    # mlflow 3.12.0+ works with pandas 3.x despite its constraint
     "pandas>=3.0",
 ]
+
+# ── Ruff ─────────────────────────────────────────────────────────────────────
 
 [tool.ruff]
 line-length = 100
@@ -109,6 +97,8 @@ select = ["E", "F", "I", "B", "UP", "SIM", "C90"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 8
+
+# ── Mypy ─────────────────────────────────────────────────────────────────────
 
 [tool.mypy]
 python_version = "3.13"
@@ -121,65 +111,52 @@ warn_unreachable = true
 no_implicit_optional = true
 
 [[tool.mypy.overrides]]
-module = ["structlog.*", "prometheus_client.*", "opentelemetry.*", "arq.*", "asyncpg.*", "qdrant_client.*"]
+module = [
+    "structlog.*", "prometheus_client.*",
+    "arq.*", "asyncpg.*", "qdrant_client.*",
+    "boto3.*", "google.auth.*", "google.cloud.*", "google.api_core.*",
+    "pyarrow.*", "mlflow.*", "sentence_transformers.*",
+    "litellm.*", "pyspark.*",
+]
 ignore_missing_imports = true
 
+# These modules use optional imports that may or may not be installed
 [[tool.mypy.overrides]]
-module = ["boto3.*", "google.auth.*", "google.cloud.*", "google.api_core.*", "pyarrow.*"]
-ignore_missing_imports = true
+module = [
+    "dataenginex.data.quality.spark",
+    "dataenginex.data.connectors.spark",
+    "dataenginex.data.connectors.dbt",
+    "dataenginex.ai.vectorstore",
+    "dataenginex.lakehouse.storage",
+    "dataenginex.ml.training",
+]
+warn_unused_ignores = false
 
-[[tool.mypy.overrides]]
-module = ["mlflow.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["sentence_transformers.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["litellm.*", "langfuse.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["pyspark.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["dataenginex.data.quality.spark"]
-warn_unused_ignores = false  # pyspark optional: ignore used in CI, unused when installed
-
-[[tool.mypy.overrides]]
-module = ["dataenginex.ai.vectorstore"]
-warn_unused_ignores = false  # sentence-transformers optional: ignore used in CI, unused when installed
-
-[[tool.mypy.overrides]]
-module = ["dataenginex.lakehouse.storage"]
-warn_unused_ignores = false  # pre-commit installs google-cloud-storage (ignore used), CI does not (ignore unused)
-
-[[tool.mypy.overrides]]
-module = ["dataenginex.ml.training"]
-warn_unused_ignores = false  # sklearn may be installed (import-untyped) or not (import-not-found) depending on env
+# ── Pytest ───────────────────────────────────────────────────────────────────
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = ["src"]
 filterwarnings = [
-    "error",                                          # Treat all warnings as errors by default
-    "ignore::DeprecationWarning:websockets\\.legacy",  # uvicorn uses deprecated websockets.legacy API
-    "ignore::DeprecationWarning:uvicorn\\.protocols",  # uvicorn imports deprecated WebSocketServerProtocol
-    "ignore:unclosed.*socket:ResourceWarning",         # Starlette TestClient GC timing
-    "ignore:unclosed event loop:ResourceWarning",      # Starlette TestClient GC timing
-    "ignore::pytest.PytestUnhandledThreadExceptionWarning",  # Qdrant compatibility check thread
+    "error",
+    "ignore::DeprecationWarning:websockets\\.legacy",
+    "ignore::DeprecationWarning:uvicorn\\.protocols",
+    "ignore:unclosed.*socket:ResourceWarning",
+    "ignore:unclosed event loop:ResourceWarning",
+    "ignore::pytest.PytestUnhandledThreadExceptionWarning",
+    "ignore::dataenginex.ai.runtime.sandbox.ExperimentalFeatureWarning",
 ]
+
+# ── Coverage ─────────────────────────────────────────────────────────────────
 
 [tool.coverage.run]
 branch = true
 source = ["dataenginex"]
-omit = [
-    # Requires a live MLflow server — not available in CI (same as S3/GCS integration tests)
-    "*/src/dataenginex/ml/mlflow_registry.py",
-]
+# parallel=true merges data from COVERAGE_PROCESS_START subprocesses so that
+# module-level code (imported at collection time) is correctly measured.
+parallel = true
+omit = ["*/src/dataenginex/ml/mlflow_registry.py"]
 
 [tool.coverage.report]
 show_missing = true

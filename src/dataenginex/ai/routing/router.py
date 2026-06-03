@@ -26,7 +26,7 @@ class ModelRouter:
     COMPLEXITY_ORDER: list[str] = ["simple", "moderate", "complex"]
 
     DEFAULT_MAPPING: dict[str, str] = {
-        "simple": "huggingface",
+        "simple": "ollama",
         "moderate": "openai",
         "complex": "anthropic",
     }

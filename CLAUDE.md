@@ -1,19 +1,19 @@
 # CLAUDE.md — DEX (dataenginex)
 
 Brief answers only. No explanations unless asked.
-Goal is to save Claude code tokens for lower cost without loosing quality.
+Goal is to save Claude code tokens for lower cost without losing quality.
 
 > Repo-specific context. Workspace-level rules, coding standards, and git conventions are in `../CLAUDE.md`.
 
 ## Project Overview
 
-**DEX** — unified Data + ML + AI framework. Config-driven, self-hosted, production-ready.
+**DEX** — unified Data + ML + AI library. Config-driven, self-hosted, local-first. Pure Python — no bundled HTTP server.
 
 | Package | Location | Purpose |
 |---------|----------|---------|
-| `dataenginex` | `src/dataenginex/` | Core framework — config, registry, CLI, API, ML, AI (routing, runtime, memory, observability, workflows) |
+| `dataenginex` | `src/dataenginex/` | Core library — config, registry, CLI, pipelines, ML, AI, PrivacyGuard |
 
-**Stack:** Python 3.13+ · FastAPI · DuckDB · structlog · Pydantic · Click · Rich · uv · Ruff · mypy strict · pytest
+**Stack:** Python 3.13+ · DuckDB · structlog · Pydantic · Click · pyarrow · croniter · httpx · prometheus-client · uv · Ruff · mypy strict · pytest
 
 **Version:** `uv run poe version`
 
@@ -40,8 +40,8 @@ uv run poe test-cov       # Tests with coverage
 dex validate dex.yaml     # Validate config file
 dex version               # Show version + environment
 
-# Run
-uv run poe dev            # Dev server (uvicorn reload, port 17000)
+# Dev
+uv run poe dev            # Dev server (uvicorn reload, port 17000) — for examples/API testing only
 uv run poe docker-up      # Docker compose up
 uv run poe docker-down    # Docker compose down
 
@@ -49,6 +49,16 @@ uv run poe docker-down    # Docker compose down
 uv run poe uv-sync        # Sync deps from lockfile
 uv run poe uv-lock        # Regenerate lockfile
 uv run poe security       # Audit deps for vulnerabilities
+```
+
+## Optional Extras
+
+```bash
+pip install "dataenginex[cloud]"        # S3, GCS, BigQuery connectors
+pip install "dataenginex[postgres]"     # asyncpg for Postgres lineage
+pip install "dataenginex[qdrant]"       # Qdrant vector store
+pip install "dataenginex[queue]"        # arq background jobs
+pip install 'litellm>=1.83.3' --no-deps # LLM routing (separate: pins python-dotenv)
 ```
 
 ______________________________________________________________________

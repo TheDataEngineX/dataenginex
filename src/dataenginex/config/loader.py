@@ -180,6 +180,34 @@ def _validate_registries(config: DexConfig) -> list[str]:
     return warnings
 
 
+def _validate_secops(config: DexConfig) -> list[str]:
+    """Validate secops.guard strategy entries against known enums.
+
+    Returns hard errors (not warnings) because an unknown PII type or masking
+    strategy will raise at engine init time — better to surface them early via
+    ``dex validate``.
+    """
+    from dataenginex.secops.masking import MaskingStrategy
+    from dataenginex.secops.pii import PIIType
+
+    valid_pii = {t.value for t in PIIType}
+    valid_strategies = {s.value for s in MaskingStrategy}
+    errors: list[str] = []
+
+    for raw_type, raw_strategy in config.secops.guard.strategies.items():
+        if raw_type not in valid_pii:
+            errors.append(
+                f"secops.guard.strategies: unknown PII type '{raw_type}' "
+                f"(valid: {sorted(valid_pii)})"
+            )
+        if raw_strategy not in valid_strategies:
+            errors.append(
+                f"secops.guard.strategies['{raw_type}']: unknown masking strategy "
+                f"'{raw_strategy}' (valid: {sorted(valid_strategies)})"
+            )
+    return errors
+
+
 def validate_config(config: DexConfig) -> list[str]:
     """Run cross-reference validation on a loaded config.
 
@@ -189,6 +217,7 @@ def validate_config(config: DexConfig) -> list[str]:
     """
     errors = _validate_pipelines(config)
     errors.extend(_validate_registries(config))
+    errors.extend(_validate_secops(config))
 
     if errors:
         logger.warning("config validation issues", count=len(errors))

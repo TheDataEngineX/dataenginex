@@ -19,6 +19,7 @@ __all__ = [
     "PIIDetector",
     "PIIField",
     "PIIType",
+    "TextMatch",
 ]
 
 
@@ -51,6 +52,28 @@ class PIIField:
     pii_type: PIIType
     confidence: float
     sample: str = ""
+
+
+@dataclass(frozen=True)
+class TextMatch:
+    """A PII match found in a span of free-form text.
+
+    Used by ``PIIDetector.scan_text`` and ``MaskingEngine.mask_text`` for
+    prompt-level scanning (the call-level path used by ``PrivacyGuard``).
+
+    Attributes:
+        pii_type: Detected PII category.
+        value: The matched substring (kept verbatim for masking).
+        start: Inclusive start index into the source text.
+        end: Exclusive end index into the source text.
+        confidence: Detection confidence 0.0–1.0.
+    """
+
+    pii_type: PIIType
+    value: str
+    start: int
+    end: int
+    confidence: float = 0.0
 
 
 # Name-based hints: if the field name contains any of these tokens,
@@ -147,6 +170,35 @@ class PIIDetector:
         """Return just the field names that contain PII."""
         return set(self.scan_dataset(records).keys())
 
+    def scan_text(self, text: str) -> list[TextMatch]:
+        """Find all PII spans in a free-form string.
+
+        Runs every value-based regex pattern that meets the configured
+        confidence threshold over *text* and returns matches sorted by
+        start position. Overlapping spans from different patterns are
+        deduplicated, keeping the leftmost / highest-confidence match.
+
+        This is the scanner used by :class:`PrivacyGuard` for outbound
+        LLM prompts.
+        """
+        if not text:
+            return []
+        matches: list[TextMatch] = []
+        for pii_type, pattern, confidence in _VALUE_PATTERNS:
+            if confidence < self._threshold:
+                continue
+            for m in pattern.finditer(text):
+                matches.append(
+                    TextMatch(
+                        pii_type=pii_type,
+                        value=m.group(),
+                        start=m.start(),
+                        end=m.end(),
+                        confidence=confidence,
+                    )
+                )
+        return _dedupe_overlapping(matches)
+
     def _check_field(self, field_name: str, value: Any) -> PIIField | None:
         """Check a single field by name then by value pattern."""
         lower_name = field_name.lower()
@@ -183,3 +235,25 @@ def _safe_sample(value: Any, keep_last: int = 4) -> str:
     if len(s) <= keep_last:
         return "*" * len(s)
     return "*" * (len(s) - keep_last) + s[-keep_last:]
+
+
+def _dedupe_overlapping(matches: list[TextMatch]) -> list[TextMatch]:
+    """Sort *matches* by start; drop any that overlap an earlier kept match.
+
+    When two patterns hit the same span (e.g. credit card and phone), the
+    higher-confidence one is preferred. Stable for equal confidence —
+    earlier-detected wins.
+    """
+    if not matches:
+        return []
+    # Sort by start, then by confidence desc so highest confidence wins for ties
+    sorted_matches = sorted(matches, key=lambda m: (m.start, -m.confidence))
+    kept: list[TextMatch] = []
+    for m in sorted_matches:
+        if kept and m.start < kept[-1].end:
+            # Overlaps the previously kept span — skip unless strictly higher confidence
+            if m.confidence > kept[-1].confidence:
+                kept[-1] = m
+            continue
+        kept.append(m)
+    return kept

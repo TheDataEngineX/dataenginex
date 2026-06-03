@@ -93,9 +93,11 @@ def version() -> None:
 
 
 from dataenginex.cli.run import run  # noqa: E402
+from dataenginex.cli.secops import secops  # noqa: E402
 from dataenginex.cli.train import train  # noqa: E402
 
 dex.add_command(run)
+dex.add_command(secops)
 dex.add_command(train)
 
 if __name__ == "__main__":

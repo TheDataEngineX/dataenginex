@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import hashlib
 from enum import StrEnum
-from typing import Any, assert_never
+from typing import TYPE_CHECKING, Any, assert_never
+
+if TYPE_CHECKING:
+    from dataenginex.secops.pii import PIIType, TextMatch
 
 __all__ = [
     "MaskingEngine",
@@ -85,6 +88,34 @@ class MaskingEngine:
     ) -> list[dict[str, Any]]:
         """Return a masked copy of every record in *records*."""
         return [self.mask_record(r, pii_fields) for r in records]
+
+    def mask_text(
+        self,
+        text: str,
+        matches: list[TextMatch],
+        strategies: dict[PIIType, MaskingStrategy] | None = None,
+    ) -> str:
+        """Return *text* with every match in *matches* replaced.
+
+        Used by :class:`~dataenginex.secops.guard.PrivacyGuard` to redact PII
+        from outbound LLM prompts. ``strategies`` maps each :class:`PIIType`
+        to its masking strategy; PII types absent from the map fall back to
+        ``self._default``.
+
+        Replacements are applied from right to left so earlier indices stay
+        valid as the string shrinks/grows.
+        """
+        if not matches:
+            return text
+        strategy_map = strategies or {}
+        # Apply replacements right-to-left to preserve indices
+        ordered = sorted(matches, key=lambda m: m.start, reverse=True)
+        result = text
+        for match in ordered:
+            strategy = strategy_map.get(match.pii_type, self._default)
+            replacement = self._apply(match.value, strategy)
+            result = result[: match.start] + replacement + result[match.end :]
+        return result
 
     def _apply(self, value: Any, strategy: MaskingStrategy) -> str:
         """Apply a single masking strategy to *value*."""

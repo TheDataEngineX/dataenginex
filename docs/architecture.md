@@ -124,20 +124,22 @@ DataEngineXError
 | `core/` | ABCs, registry, exceptions |
 | `cli/` | `dex` CLI (validate, version, init) |
 | `api/` | HTTP helpers: error types, response models |
-| `data/` | Connectors, pipeline runner, quality, profiler |
+| `data/connectors/` | Built-in connectors: CSV, Parquet, DuckDB, REST, Kafka, **Spark**, **dbt** |
+| `data/pipeline/` | Pipeline runner, transforms, quality, profiler |
 | `ml/` | Classical ML: training, registry, serving, drift |
 | `ai/` | LLM, agents, RAG, vectorstore, memory, observability |
 | `orchestration/` | DriftScheduler, background tasks |
 | `middleware/` | structlog config, Prometheus metrics |
 | `lakehouse/` | Storage backends, catalog, partitioning |
 | `warehouse/` | SQL transforms, lineage |
+| `secops/` | **PrivacyGuard** — PII detection, masking strategies, outbound-call audit |
 | `plugins/` | Entry-point discovery |
 
 ## Tech Stack
 
 | Component | Built-in | Extra |
 |-----------|----------|-------|
-| Data Engine | DuckDB | PySpark (`[spark]`) |
+| Data Engine | DuckDB | PySpark / dbt CLI (`[data]`) |
 | Orchestration | croniter scheduler | — |
 | ML Tracking | JSON-based | MLflow (`[tracking]`) |
 | Model Serving | Built-in predictor | — |
@@ -148,6 +150,7 @@ DataEngineXError
 | Logging | structlog | — |
 | Config | Pydantic + YAML | — |
 | CLI | Click | — |
+| Privacy / Audit | PrivacyGuard — PII masking + audit | — |
 | LLM Observability | — | Langfuse (`[observability]`) |
 | Cloud Storage | — | S3/GCS/BigQuery (`[cloud]`) |
 
@@ -164,6 +167,7 @@ DataEngineXError
 | AD7 | Project isolation via separate DuckDB files | Each project's `.dex/store.duckdb` is self-contained |
 | AD8 | Python 3.13+ | Full type parameter syntax, improved error messages |
 | AD9 | `ai/` for LLM/agents, `ml/` for classical ML | Clear domain separation |
+| AD10 | PrivacyGuard intercepts all outbound LLM calls | PII never leaves disk unmasked; audit trail is immutable |
 
 ## Ecosystem
 

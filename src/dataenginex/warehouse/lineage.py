@@ -274,6 +274,12 @@ class PostgresLineage:
         try:
             self._run(self._ensure_table())
             self._pg_ok = True
+        except ImportError as exc:
+            logger.warning(
+                "asyncpg not installed — using JSON fallback for lineage. "
+                "Install via: pip install 'dataenginex[postgres]'",
+                error=str(exc),
+            )
         except Exception as exc:
             logger.warning("postgres lineage unavailable, using JSON fallback", error=str(exc))
 

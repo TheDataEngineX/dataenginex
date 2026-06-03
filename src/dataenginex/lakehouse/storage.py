@@ -36,8 +36,8 @@ __all__ = [
 
 # Try importing pyarrow — optional heavyweight dependency
 try:
-    import pyarrow as pa  # type: ignore[import-not-found]
-    import pyarrow.parquet as pq  # type: ignore[import-not-found]
+    import pyarrow as pa  # type: ignore[import-not-found,import-untyped]
+    import pyarrow.parquet as pq  # type: ignore[import-not-found,import-untyped,no-untyped-call]
 
     _HAS_PYARROW = True
 except ImportError:
@@ -166,7 +166,7 @@ class ParquetStorage(StorageBackend):
                 logger.warning("no records to write", path=str(full))
                 return False
             table = pa.Table.from_pylist(records)
-            pq.write_table(table, str(full), compression=self.compression)
+            pq.write_table(table, str(full), compression=self.compression)  # type: ignore[no-untyped-call]
             logger.info("wrote records", count=len(records), path=str(full))
             return True
         except Exception as exc:
@@ -183,7 +183,7 @@ class ParquetStorage(StorageBackend):
             if not full.exists():
                 logger.warning("parquet file not found", path=str(full))
                 return None
-            table = pq.read_table(str(full))
+            table = pq.read_table(str(full))  # type: ignore[no-untyped-call]
             return table.to_pylist()
         except Exception as exc:
             logger.error("parquet storage read failed", exc=str(exc))

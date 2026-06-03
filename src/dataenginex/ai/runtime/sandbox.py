@@ -1,21 +1,31 @@
-"""Subprocess-based sandbox for isolated code execution.
+"""EXPERIMENTAL — Subprocess-based sandbox for isolated code execution.
 
-Runs untrusted code in a child process with enforced:
+.. warning::
+
+   This module is **experimental** and provides only **process-level**
+   isolation. It is **not safe** for running adversarial untrusted code.
+   Use a container (Docker, gVisor) or VM for stronger isolation. The
+   API and defaults may change without notice.
+
+Runs code in a child process with enforced:
   - Wall-clock timeout (subprocess ``timeout`` parameter)
   - Memory cap (``RLIMIT_AS`` via ``resource.setrlimit`` on Linux/macOS)
   - CPU time cap (``RLIMIT_CPU``)
   - Clean environment (no parent env vars unless explicitly allowed)
   - Execution in a dedicated temp directory (removed after the run)
 
-No network isolation is applied — this is a **process-level** sandbox
-appropriate for untrusted user scripts that should not hang, OOM, or
-escape into the host filesystem.  For stronger isolation, run the process
-inside a container instead.
+No network isolation is applied.
 
 Supported languages
 -------------------
 python      — ``sys.executable -c <code>`` (or via temp file)
 bash        — ``/bin/bash -c <code>`` (if available)
+
+Suppressing the experimental warning::
+
+    import warnings
+    from dataenginex.ai.runtime.sandbox import ExperimentalFeatureWarning
+    warnings.filterwarnings("ignore", category=ExperimentalFeatureWarning)
 """
 
 from __future__ import annotations
@@ -24,17 +34,43 @@ import os
 import subprocess
 import sys
 import tempfile
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 __all__ = [
+    "ExperimentalFeatureWarning",
     "Sandbox",
     "SandboxConfig",
     "SandboxResult",
     "SandboxTimeoutError",
     "UnsupportedLanguageError",
 ]
+
+
+class ExperimentalFeatureWarning(UserWarning):
+    """Raised once per process when an experimental DEX feature is used."""
+
+
+# Module-level flag — emit experimental warning at most once per process.
+_experimental_warned = False
+
+
+def _warn_experimental_once() -> None:
+    """Emit the experimental warning at most once per Python process."""
+    global _experimental_warned
+    if _experimental_warned:
+        return
+    _experimental_warned = True
+    warnings.warn(
+        "dataenginex.ai.runtime.sandbox is EXPERIMENTAL — process-level "
+        "isolation only, not safe for adversarial untrusted code. Use a "
+        "container or VM for stronger isolation. API may change.",
+        ExperimentalFeatureWarning,
+        stacklevel=3,
+    )
+
 
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MEMORY_MB = 256
@@ -97,6 +133,7 @@ class Sandbox:
     """
 
     def __init__(self, config: SandboxConfig | None = None) -> None:
+        _warn_experimental_once()
         self._config = config or SandboxConfig()
 
     def execute_code(

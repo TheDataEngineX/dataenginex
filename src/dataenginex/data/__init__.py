@@ -31,6 +31,7 @@ from dataenginex.data.connectors.legacy import (
     FileConnector,
     RestConnector,
 )
+from dataenginex.data.connectors.parquet import ParquetConnector
 from dataenginex.data.pipeline.runner import PipelineResult, PipelineRunner
 from dataenginex.data.profiler import ColumnProfile, DataProfiler, ProfileReport
 from dataenginex.data.quality.gates import QualityResult, check_quality
@@ -41,6 +42,7 @@ __all__ = [
     # New
     "CsvConnector",
     "DuckDBConnector",
+    "ParquetConnector",
     "PipelineResult",
     "PipelineRunner",
     "QualityResult",

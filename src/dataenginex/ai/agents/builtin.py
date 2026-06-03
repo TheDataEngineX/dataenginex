@@ -15,7 +15,6 @@ import structlog
 
 from dataenginex.ai.agents import agent_registry
 from dataenginex.ai.tools import ToolRegistry, tool_registry
-from dataenginex.ai.tools.builtin import register_builtin_tools
 from dataenginex.core.interfaces import BaseAgentRuntime
 from dataenginex.middleware.domain_metrics import (
     ai_agent_iterations,
@@ -51,7 +50,6 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
         self._max_iterations = max_iterations
         self._name = name
         self._history: list[dict[str, str]] = []
-        register_builtin_tools()
 
     async def run(self, message: str, **kwargs: Any) -> dict[str, Any]:
         """Execute agent with message and return structured result.
@@ -69,6 +67,12 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
 
             if step_result.get("done", False):
                 response = str(step_result.get("response", ""))
+                # Strip raw ReAct trace: extract ANSWER: content if present
+                import re as _re
+
+                _ans = _re.search(r"ANSWER:\s*(.+)", response, _re.DOTALL | _re.IGNORECASE)
+                if _ans:
+                    response = _ans.group(1).strip()
                 self._history.append({"role": "assistant", "content": response})
                 ai_agent_iterations.labels(agent=self._name).observe(iterations)
                 return {"response": response, "iterations": iterations, "tool_calls": tool_calls}
@@ -85,22 +89,25 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
 
     async def step(self, message: str, **kwargs: Any) -> dict[str, Any]:
         """Execute one reasoning step."""
+        import json
+        import re
+
         iteration = kwargs.get("iteration", 0)
 
         if self._llm is None:
-            # No LLM — just echo the message and mark done
             return {"done": True, "response": message, "iteration": iteration}
 
-        # Build prompt with tool descriptions
         tool_names = self._tools.list()
         tool_desc = ", ".join(tool_names) if tool_names else "none"
 
         prompt = (
-            f"{self._system_prompt}\n\n"
             f"Available tools: {tool_desc}\n\n"
-            f"To use a tool, respond with: TOOL: <name> ARGS: <json_args>\n"
-            f"To give a final answer, respond with: ANSWER: <your answer>\n\n"
-            f"User: {message}"
+            f"You MUST respond in EXACTLY one of these two formats — no other text:\n"
+            f'  TOOL: <tool_name>\n  ARGS: {{"key": "value"}}\n\n'
+            f"  ANSWER: <your final answer>\n\n"
+            f"Example tool call:\n"
+            f'  TOOL: query\n  ARGS: {{"sql": "SELECT * FROM gold_top_movies LIMIT 3"}}\n\n'
+            f"User request: {message}"
         )
 
         from dataenginex.ai.llm import ChatMessage
@@ -112,33 +119,34 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
         ]
 
         response = self._llm.chat(messages)
-        text = response.text
+        text = response.text.strip()
 
-        # Parse response for tool calls
-        if text.startswith("TOOL:"):
-            return self._handle_tool_call(text, iteration)
+        # Robust: search for TOOL: pattern anywhere in text
+        tool_match = re.search(
+            r"TOOL:\s*(\w+)\s*\n?\s*ARGS:\s*(\{.*?\})",
+            text,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if tool_match:
+            tool_name = tool_match.group(1).strip()
+            args_str = tool_match.group(2).strip()
+            try:
+                args = json.loads(args_str)
+            except json.JSONDecodeError:
+                args = {}
+            return self._handle_tool_call_parsed(tool_name, args, iteration)
 
-        # Final answer
-        answer = text.removeprefix("ANSWER:").strip() if text.startswith("ANSWER:") else text
+        # Final answer — strip ANSWER: prefix if present
+        answer = re.sub(r"^ANSWER:\s*", "", text, flags=re.IGNORECASE).strip()
         return {"done": True, "response": answer, "iteration": iteration}
 
-    def _handle_tool_call(
+    def _handle_tool_call_parsed(
         self,
-        text: str,
+        tool_name: str,
+        args: dict[str, Any],
         iteration: int,
     ) -> dict[str, Any]:
-        """Parse and execute a tool call."""
-        import json
-
-        parts = text.split("ARGS:", 1)
-        tool_name = parts[0].removeprefix("TOOL:").strip()
-        args_str = parts[1].strip() if len(parts) > 1 else "{}"
-
-        try:
-            args = json.loads(args_str)
-        except json.JSONDecodeError:
-            args = {}
-
+        """Execute a parsed tool call."""
         try:
             result = self._tools.call(tool_name, **args)
             observation = f"Tool '{tool_name}' returned: {result}"
@@ -150,7 +158,6 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
         self._history.append(
             {"role": "assistant", "content": f"[tool: {tool_name}] {observation}"},
         )
-
         return {
             "done": False,
             "tool": tool_name,
@@ -158,6 +165,23 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
             "observation": observation,
             "iteration": iteration,
         }
+
+    def _handle_tool_call(
+        self,
+        text: str,
+        iteration: int,
+    ) -> dict[str, Any]:
+        """Parse and execute a tool call from raw TOOL:/ARGS: text."""
+        import json
+
+        parts = text.split("ARGS:", 1)
+        tool_name = parts[0].removeprefix("TOOL:").strip()
+        args_str = parts[1].strip() if len(parts) > 1 else "{}"
+        try:
+            args = json.loads(args_str)
+        except json.JSONDecodeError:
+            args = {}
+        return self._handle_tool_call_parsed(tool_name, args, iteration)
 
     @property
     def history(self) -> list[dict[str, str]]:

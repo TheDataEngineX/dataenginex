@@ -56,8 +56,11 @@ class DexBackend(Protocol):
     serving_engine: Any
     llm: Any
     ai_memory: Any
+    ai_metrics: Any
     ai_episodic: Any
     ai_audit: Any
+    secops_audit: Any
+    privacy_guard: Any
     plugins: Any
     catalog: Any
     project_dir: Any
@@ -95,7 +98,14 @@ class DexBackend(Protocol):
 
     def add_pipeline(self, name: str, source: str, schedule: str, destination: str) -> None: ...
     def delete_pipeline(self, name: str) -> None: ...
-    def add_source(self, name: str, type_: str, path: str = "", url: str = "") -> None: ...
+    def add_source(
+        self,
+        name: str,
+        type_: str,
+        path: str = "",
+        url: str = "",
+        connection: dict[str, Any] | None = None,
+    ) -> None: ...
     def delete_source(self, name: str) -> None: ...
     def add_agent(self, name: str, runtime: str, system_prompt: str) -> None: ...
     def delete_agent(self, name: str) -> None: ...
@@ -147,22 +157,30 @@ class DexEngine:
         # Lakehouse catalog — tracks every dataset written to .dex/lakehouse/
         self.catalog = DataCatalog(persist_path=self._dex_dir / "catalog.json")
 
-        # Data pipeline runner — passes store as lineage backend
+        # ML backends — init before pipeline runner so feature_store is available
+        self.tracker: Any = self._init_ml_tracker()
+        self.feature_store: Any = self._init_ml_feature_store()
+        self.serving_engine: Any = self._init_ml_serving()
+
+        # Vector store — init before pipeline runner and AI so both can share it
+        self._vector_store: Any = None
+        self._embed_fn: Any = None
+        self._vector_store, self._embed_fn = self._init_vector_store()
+
+        # Data pipeline runner — has access to feature store + vector store
         from dataenginex.data.pipeline.runner import PipelineRunner
 
         self.pipeline_runner = PipelineRunner(
             self.config,
             data_dir=self._dex_dir / "lakehouse",
             project_dir=self.project_dir,
-            lineage=self.store,  # DexStore.record() satisfies PersistentLineage interface
+            lineage=self.store,
+            feature_store=self.feature_store,
+            vector_store=self._vector_store,
+            embed_fn=self._embed_fn,
         )
 
-        # ML backends
-        self.tracker: Any = self._init_ml_tracker()
-        self.feature_store: Any = self._init_ml_feature_store()
-        self.serving_engine: Any = self._init_ml_serving()
-
-        # AI backends
+        # AI backends — ingest existing lakehouse into vector store, init agents
         self.llm: Any = None
         self.agents: dict[str, Any] = {}
         self._init_ai()
@@ -176,6 +194,13 @@ class DexEngine:
         self.checkpoint_mgr: Any = None
         self.sandbox: Any = None
         self.model_router: Any = None
+        # SecOps AuditLogger (secops.audit config) — separate from ai_audit
+        self.secops_audit: Any = None
+        # PrivacyGuard must initialise even if the AI layer fails — it's a
+        # security primitive consumed independently (e.g. by dex-studio's
+        # /privacy/* UI). Initialise before _init_ai_layer so the guard is
+        # always available, then wire it into the router inside the AI init.
+        self._init_privacy_guard()
         self._init_ai_layer()
 
         # Plugin discovery
@@ -306,11 +331,21 @@ class DexEngine:
         self.config.data.pipelines.pop(name, None)
         self._save_config()
 
-    def add_source(self, name: str, type_: str, path: str = "", url: str = "") -> None:
+    def add_source(
+        self,
+        name: str,
+        type_: str,
+        path: str = "",
+        url: str = "",
+        connection: dict[str, Any] | None = None,
+    ) -> None:
         from dataenginex.config.schema import SourceConfig
 
         self.config.data.sources[name] = SourceConfig(
-            type=type_, path=path or None, url=url or None
+            type=type_,
+            path=path or None,
+            url=url or None,
+            connection=connection or {},
         )
         self._save_config()
 
@@ -364,7 +399,7 @@ class DexEngine:
                 )
                 updated_at = datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%b %d %H:%M")
                 row_count: int | None = None
-                with contextlib.suppress(Exception), self._duckdb() as conn:
+                with contextlib.suppress(Exception), self._duckdb_ro() as conn:
                     row = conn.execute(f"SELECT COUNT(*) FROM read_parquet('{f}')").fetchone()
                     row_count = int(row[0]) if row else None
 
@@ -397,7 +432,7 @@ class DexEngine:
         if not table_path.exists():
             return []
         try:
-            with self._duckdb() as conn:
+            with self._duckdb_ro() as conn:
                 conn.execute(f"CREATE VIEW IF NOT EXISTS _wts AS SELECT * FROM '{table_path}'")
                 cols = conn.execute("DESCRIBE _wts").fetchall()
                 conn.execute("DROP VIEW IF EXISTS _wts")
@@ -413,7 +448,7 @@ class DexEngine:
         size = table_path.stat().st_size
         schema = self.warehouse_table_schema(table_name, layer)
         row_count = None
-        with contextlib.suppress(Exception), self._duckdb() as conn:
+        with contextlib.suppress(Exception), self._duckdb_ro() as conn:
             row_count = conn.execute(
                 f"SELECT COUNT(*) FROM read_parquet('{table_path}')"
             ).fetchone()[0]
@@ -521,7 +556,7 @@ class DexEngine:
         with contextlib.suppress(Exception), duckdb.connect(":memory:") as conn:
             rows = conn.execute(f"DESCRIBE SELECT * FROM {read_fn}('{qpath}') LIMIT 1").fetchall()
             return [
-                {"column_name": r[0], "column_type": r[1], "nullable": r[3] == "YES"} for r in rows
+                {"column_name": r[0], "column_type": r[1], "nullable": r[3] != "NO"} for r in rows
             ]
         return None
 
@@ -577,7 +612,7 @@ class DexEngine:
         if not table_path.exists():
             return None
         try:
-            with self._duckdb() as conn:
+            with self._duckdb_ro() as conn:
                 conn.execute(f"CREATE VIEW IF NOT EXISTS _qc AS SELECT * FROM '{table_path}'")
                 col_result = conn.execute("DESCRIBE _qc").fetchall()
                 column_names = [r[0] for r in col_result]
@@ -662,13 +697,64 @@ class DexEngine:
 
     @contextlib.contextmanager
     def _duckdb(self) -> Iterator[Any]:
-        """Yield the DexStore's DuckDB connection for ad-hoc queries."""
+        """Yield the DexStore's DuckDB connection for store-level writes only.
+
+        Never use this for read-only parquet queries — those must open their own
+        in-memory connection via _duckdb_ro() to avoid cross-thread contention.
+        """
         yield self.store.connection
 
+    @contextlib.contextmanager
+    def _duckdb_ro(self) -> Iterator[Any]:
+        """Yield a fresh in-memory DuckDB connection for read-only parquet queries.
+
+        Keeps read traffic off the shared store connection so pipeline runs
+        executing in a thread-pool executor don't race with web-request reads.
+        """
+        conn = duckdb.connect(":memory:")
+        try:
+            yield conn
+        finally:
+            with contextlib.suppress(Exception):
+                conn.close()
+
     def _save_config(self) -> None:
-        dump = self.config.model_dump()
-        with open(self.config_path, "w") as f:
-            yaml.dump(dump, f, default_flow_style=False, sort_keys=False)
+        """Write config atomically: temp file → os.replace.
+
+        Strips None/empty values so the file stays readable. Writes a .bak
+        alongside the config before every save so the user can recover.
+        """
+        import os
+
+        dump = self._config_dump_clean()
+        tmp = self.config_path.with_suffix(".yaml.tmp")
+        bak = self.config_path.with_suffix(".yaml.bak")
+        try:
+            with tmp.open("w") as f:
+                yaml.dump(dump, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            # Backup current config before overwriting
+            if self.config_path.exists():
+                import shutil
+
+                shutil.copy2(self.config_path, bak)
+            os.replace(tmp, self.config_path)  # atomic on POSIX and Windows
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+
+    def _config_dump_clean(self) -> dict[str, Any]:
+        """Return config as dict with None/empty-dict values removed recursively."""
+        from typing import cast as _cast
+
+        def _strip(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                cleaned = {k: _strip(v) for k, v in obj.items() if v is not None}
+                return {k: v for k, v in cleaned.items() if v != {} and v != []}
+            if isinstance(obj, list):
+                return [_strip(i) for i in obj]
+            return obj
+
+        return _cast(dict[str, Any], _strip(self.config.model_dump()))
 
     def _init_ml_tracker(self) -> Any:
         try:
@@ -712,6 +798,79 @@ class DexEngine:
             logger.warning("serving engine init failed")
             return None
 
+    def _init_vector_store(self) -> tuple[Any, Any]:
+        """Initialise in-memory vector store + embedding function.
+
+        Returns (vector_store, embed_fn). Both may be None on failure.
+        Falls back to hash-based embedding when sentence-transformers is absent.
+        """
+        vector_store: Any = None
+        embed_fn: Any = None
+        try:
+            from dataenginex.ai.vectorstore import InMemoryBackend
+
+            vector_store = InMemoryBackend(dimension=384)
+            with contextlib.suppress(ImportError):
+                from dataenginex.ai.vectorstore import SentenceTransformerEmbedder
+
+                embed_fn = SentenceTransformerEmbedder()
+                logger.info("sentence transformer embedder ready")
+            logger.info("vector store initialised", backend="in-memory")
+        except Exception:
+            logger.warning("vector store init failed")
+        return vector_store, embed_fn
+
+    def _ingest_lakehouse_to_vector_store(self) -> None:
+        """Embed and index gold/silver tables into the vector store on startup."""
+        if self._vector_store is None:
+            return
+        lakehouse = self._dex_dir / "lakehouse"
+        try:
+            from dataenginex.ai.vectorstore import Document, RAGPipeline
+
+            rag = RAGPipeline(
+                store=self._vector_store,
+                embed_fn=self._embed_fn,
+                dimension=384,
+            )
+            ingested = 0
+            for layer in ("silver", "gold"):
+                layer_dir = lakehouse / layer
+                if not layer_dir.exists():
+                    continue
+                for pf in sorted(layer_dir.glob("*.parquet")):
+                    with contextlib.suppress(Exception):
+                        import duckdb
+
+                        conn = duckdb.connect(":memory:")
+                        safe = str(pf).replace("'", "''")
+                        rows = conn.execute(
+                            f"SELECT * FROM read_parquet('{safe}') LIMIT 5000"
+                        ).fetchall()
+                        desc = conn.execute(
+                            f"DESCRIBE SELECT * FROM read_parquet('{safe}')"
+                        ).fetchall()
+                        conn.close()
+                        cols = [d[0] for d in desc]
+                        docs: list[Document] = []
+                        for row in rows:
+                            record = dict(zip(cols, row, strict=True))
+                            text = " | ".join(
+                                f"{k}: {v}" for k, v in record.items() if v is not None
+                            )[:512]
+                            docs.append(
+                                Document(
+                                    text=text,
+                                    metadata={"table": pf.stem, "layer": layer},
+                                )
+                            )
+                        if docs:
+                            rag.store.upsert(docs)
+                            ingested += len(docs)
+            logger.info("vector store populated", documents=ingested)
+        except Exception as exc:
+            logger.warning("vector store ingest failed", error=str(exc))
+
     def _init_ai(self) -> None:
         try:
             from dataenginex.ai.llm import get_llm_provider
@@ -720,6 +879,20 @@ class DexEngine:
         except Exception:
             self.llm = None
             logger.warning("LLM provider unavailable")
+
+        # Register tools regardless of LLM availability — predict/search_similar are LLM-free.
+        try:
+            from dataenginex.ai.tools.builtin import register_builtin_tools
+
+            self._ingest_lakehouse_to_vector_store()
+            register_builtin_tools(
+                lakehouse_dir=self._dex_dir / "lakehouse",
+                models_dir=self._dex_dir / "models",
+                vector_store=self._vector_store,
+                embed_fn=self._embed_fn,
+            )
+        except Exception:
+            logger.warning("tool registration failed")
 
         if self.llm is None:
             return
@@ -730,9 +903,7 @@ class DexEngine:
             import dataenginex.ai.agents.builtin  # noqa: F401
             from dataenginex.ai.agents import agent_registry
             from dataenginex.ai.tools import tool_registry
-            from dataenginex.ai.tools.builtin import register_builtin_tools
 
-            register_builtin_tools()
             for name, agent_cfg in self.config.ai.agents.items():
                 agent_llm = self.llm
                 if agent_cfg.model:
@@ -746,6 +917,7 @@ class DexEngine:
                     system_prompt=agent_cfg.system_prompt,
                     tools=tool_registry,
                     max_iterations=agent_cfg.max_iterations,
+                    name=name,
                 )
                 logger.info("agent initialized", agent=name)
         except Exception:
@@ -771,24 +943,72 @@ class DexEngine:
         except Exception:
             logger.warning("AI layer init failed")
 
+    def _init_privacy_guard(self) -> None:
+        """Build a ``PrivacyGuard`` from ``dex.yaml secops.guard``.
+
+        Also constructs a :class:`~dataenginex.secops.AuditLogger` when
+        ``secops.audit.enabled`` is ``True``, stored on ``self.secops_audit``.
+        An empty ``db_path`` uses in-memory DuckDB; a relative path is
+        resolved under ``<project>/.dex/``; absolute paths are used as-is.
+
+        Stored on ``self.privacy_guard``. Used by ``_init_model_router`` to
+        wrap every LLM provider, and exposed for downstream consumers
+        (dex-studio's ``/secops/*`` UI, custom integrations).
+        """
+        from dataenginex.secops import (
+            AuditLogger,
+            PrivacyGuard,
+            PrivacyGuardConfig,
+        )
+
+        guard_dict = self.config.secops.guard.model_dump()
+        guard_cfg = PrivacyGuardConfig.from_dict(guard_dict)
+
+        audit_logger: AuditLogger | None = None
+        if self.config.secops.audit.enabled:
+            raw_path = self.config.secops.audit.db_path.strip()
+            if not raw_path:
+                db_path = ":memory:"
+            else:
+                from pathlib import Path as _Path
+
+                p = _Path(raw_path)
+                db_path = str(p if p.is_absolute() else self._dex_dir / p)
+            audit_logger = AuditLogger(db_path=db_path)
+            self.secops_audit = audit_logger
+            logger.info(
+                "secops_audit.initialized",
+                db_path=db_path,
+            )
+
+        self.privacy_guard = PrivacyGuard(
+            config=guard_cfg,
+            audit_logger=audit_logger,
+        )
+
     def _init_model_router(self) -> None:
         import os
 
-        from dataenginex.ai.routing.router import ModelRouter
+        from dataenginex.ai.routing.guarded import GuardedProvider
+        from dataenginex.ai.routing.router import BaseProvider, ModelRouter
 
-        providers: dict[str, Any] = {}
+        def _wrap(name: str, provider: BaseProvider) -> BaseProvider:
+            """Wrap *provider* with the guard. Local targets bypass at call time."""
+            return GuardedProvider(provider, self.privacy_guard, target=name)
+
+        providers: dict[str, BaseProvider] = {}
         if os.environ.get("ANTHROPIC_API_KEY"):
             from dataenginex.ai.routing.anthropic import AnthropicProvider
 
-            providers["anthropic"] = AnthropicProvider()
+            providers["anthropic"] = _wrap("anthropic", AnthropicProvider())
         if os.environ.get("OPENAI_API_KEY"):
             from dataenginex.ai.routing.openai import OpenAIProvider
 
-            providers["openai"] = OpenAIProvider()
+            providers["openai"] = _wrap("openai", OpenAIProvider())
 
         from dataenginex.ai.routing.ollama import OllamaProvider
 
-        providers.setdefault("ollama", OllamaProvider())
+        providers.setdefault("ollama", _wrap("ollama", OllamaProvider()))
 
         if providers:
             self.model_router = ModelRouter(providers)

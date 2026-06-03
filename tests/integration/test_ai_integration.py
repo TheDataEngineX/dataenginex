@@ -53,7 +53,7 @@ class TestModelRouter:
         mid = EchoProvider()
         top = EchoProvider()
         router = ModelRouter(
-            providers={"huggingface": local, "openai": mid, "anthropic": top},
+            providers={"ollama": local, "openai": mid, "anthropic": top},
         )
         assert router.route("task", "simple") is local
 
@@ -81,7 +81,7 @@ class TestModelRouter:
     def test_missing_provider_key_raises_key_error(self) -> None:
         router = ModelRouter(
             providers={},
-            mapping={"simple": "huggingface"},
+            mapping={"simple": "ollama"},
         )
         with pytest.raises(KeyError):
             router.route("task", "simple")
