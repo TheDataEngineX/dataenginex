@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import pyarrow as pa
+import pyarrow.parquet as pq
 import structlog
 
 from dataenginex.core.interfaces import BaseConnector
@@ -90,8 +92,6 @@ class ParquetConnector(BaseConnector):
     def write(self, data: Any, *, table: str = "output.parquet", **kwargs: Any) -> None:
         if self._conn is None:
             raise RuntimeError(NOT_CONNECTED)
-        import pyarrow as pa
-        import pyarrow.parquet as pq
 
         filepath = self._path / table if self._path.is_dir() else self._path
         if isinstance(data, list):
@@ -101,7 +101,7 @@ class ParquetConnector(BaseConnector):
         else:
             msg = f"Unsupported data type: {type(data)}"
             raise TypeError(msg)
-        pq.write_table(tbl, filepath)
+        pq.write_table(tbl, filepath)  # type: ignore[no-untyped-call]
         logger.info("parquet written", path=str(filepath), rows=len(tbl))
 
     def health_check(self) -> bool:

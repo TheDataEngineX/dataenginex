@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import pyarrow as pa
+import pyarrow.csv as pcsv
 import structlog
 
 from dataenginex.core.interfaces import BaseConnector
@@ -77,8 +79,6 @@ class CsvConnector(BaseConnector):
     def write(self, data: Any, *, table: str = "output.csv", **kwargs: Any) -> None:
         if self._conn is None:
             raise RuntimeError(NOT_CONNECTED)
-        import pyarrow as pa
-        import pyarrow.csv as pcsv
 
         filepath = self._path / table
         if isinstance(data, list):
@@ -89,7 +89,7 @@ class CsvConnector(BaseConnector):
             msg = f"Unsupported data type: {type(data)}"
             raise TypeError(msg)
 
-        pcsv.write_csv(tbl, filepath)
+        pcsv.write_csv(tbl, filepath)  # type: ignore[attr-defined]
         logger.info("csv written", path=str(filepath), rows=len(tbl))
 
     def health_check(self) -> bool:
