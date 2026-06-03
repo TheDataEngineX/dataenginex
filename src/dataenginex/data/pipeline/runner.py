@@ -30,8 +30,10 @@ from dataenginex.data.connectors import connector_registry
 
 # Import to trigger registration
 from dataenginex.data.connectors.csv import CsvConnector as _CsvConnector  # noqa: F401
+from dataenginex.data.connectors.dbt import DbtConnector as _DbtConnector  # noqa: F401
 from dataenginex.data.connectors.duckdb import DuckDBConnector as _DuckDBConnector  # noqa: F401
 from dataenginex.data.connectors.parquet import ParquetConnector as _ParquetConnector  # noqa: F401
+from dataenginex.data.connectors.spark import SparkConnector as _SparkConnector  # noqa: F401
 from dataenginex.data.pipeline.dag import resolve_execution_order
 from dataenginex.data.quality.gates import check_quality
 from dataenginex.data.transforms import transform_registry
@@ -279,8 +281,8 @@ class PipelineRunner:
         raw_data = connector.read(table=read_table)
         connector.disconnect()
 
-        bronze_arrow = pa.Table.from_pylist(raw_data)  # noqa: F841 — referenced by DuckDB SQL
-        conn.execute("CREATE OR REPLACE TABLE bronze AS SELECT * FROM bronze_arrow")
+        conn.register("_raw_src", pa.Table.from_pylist(raw_data))
+        conn.execute("CREATE OR REPLACE TABLE bronze AS SELECT * FROM _raw_src")
         log.info("extract complete (source)", source=cfg.source, rows=len(raw_data))
 
         if self._lineage is not None:

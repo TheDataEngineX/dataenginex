@@ -15,6 +15,7 @@ import structlog
 
 from dataenginex.core.interfaces import BaseConnector
 from dataenginex.data.connectors import connector_registry
+from dataenginex.data.connectors._utils import NOT_CONNECTED, rows_to_dicts
 
 logger = structlog.get_logger()
 
@@ -73,8 +74,7 @@ class ParquetConnector(BaseConnector):
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
         if self._conn is None:
-            msg = "Not connected — call connect() first"
-            raise RuntimeError(msg)
+            raise RuntimeError(NOT_CONNECTED)
         try:
             filepath = self._resolve_path(table)
         except FileNotFoundError:
@@ -83,15 +83,13 @@ class ParquetConnector(BaseConnector):
             raise
         safe = str(filepath).replace("'", "''")
         result = self._conn.execute(f"SELECT * FROM read_parquet('{safe}')")
-        columns = [desc[0] for desc in result.description]
-        rows = result.fetchall()
-        logger.info("parquet read", path=safe, rows=len(rows))
-        return [dict(zip(columns, row, strict=True)) for row in rows]
+        dicts = rows_to_dicts(result)
+        logger.info("parquet read", path=safe, rows=len(dicts))
+        return dicts
 
     def write(self, data: Any, *, table: str = "output.parquet", **kwargs: Any) -> None:
         if self._conn is None:
-            msg = "Not connected — call connect() first"
-            raise RuntimeError(msg)
+            raise RuntimeError(NOT_CONNECTED)
         import pyarrow as pa
         import pyarrow.parquet as pq
 

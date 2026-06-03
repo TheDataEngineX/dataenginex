@@ -13,10 +13,9 @@ import structlog
 
 from dataenginex.core.interfaces import BaseConnector
 from dataenginex.data.connectors import connector_registry
+from dataenginex.data.connectors._utils import NOT_CONNECTED, rows_to_dicts
 
 logger = structlog.get_logger()
-
-_NOT_CONNECTED = "Not connected — call connect() first"
 
 
 @connector_registry.decorator("duckdb", is_default=True)
@@ -45,11 +44,10 @@ class DuckDBConnector(BaseConnector):
 
     def read(self, *, table: str, default: Any = None, **kwargs: Any) -> list[dict[str, Any]]:
         if self._conn is None:
-            raise RuntimeError(_NOT_CONNECTED)
+            raise RuntimeError(NOT_CONNECTED)
         try:
             result = self._conn.execute(f"SELECT * FROM {table}")  # noqa: S608
-            columns: list[str] = [desc[0] for desc in result.description]
-            return [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
+            return rows_to_dicts(result)
         except duckdb.CatalogException:
             if default is not None:
                 return list(default)
@@ -57,7 +55,7 @@ class DuckDBConnector(BaseConnector):
 
     def write(self, data: Any, *, table: str, **kwargs: Any) -> None:
         if self._conn is None:
-            raise RuntimeError(_NOT_CONNECTED)
+            raise RuntimeError(NOT_CONNECTED)
         import pyarrow as pa
 
         if isinstance(data, list):
@@ -70,7 +68,15 @@ class DuckDBConnector(BaseConnector):
             msg = f"Unsupported data type: {type(data)}"
             raise TypeError(msg)
 
-        self._conn.execute(f"CREATE TABLE IF NOT EXISTS {table} AS SELECT * FROM tbl")  # noqa: S608
+        # Register to avoid frame-scan (not reliable on all connection types).
+        # CREATE OR REPLACE overwrites existing data; CREATE TABLE IF NOT EXISTS was a silent no-op.
+        self._conn.register("_dex_write_tmp", tbl)
+        try:
+            self._conn.execute(  # noqa: S608
+                f"CREATE OR REPLACE TABLE {table} AS SELECT * FROM _dex_write_tmp"
+            )
+        finally:
+            self._conn.unregister("_dex_write_tmp")
         logger.info("data written", table=table, rows=len(tbl))
 
     def health_check(self) -> bool:
@@ -85,14 +91,13 @@ class DuckDBConnector(BaseConnector):
     def execute(self, sql: str) -> list[dict[str, Any]]:
         """Execute raw SQL and return results as list of dicts."""
         if self._conn is None:
-            raise RuntimeError(_NOT_CONNECTED)
+            raise RuntimeError(NOT_CONNECTED)
         result = self._conn.execute(sql)
-        columns = [desc[0] for desc in result.description]
-        return [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
+        return rows_to_dicts(result)
 
     @property
     def connection(self) -> duckdb.DuckDBPyConnection:
         """Direct access to the DuckDB connection for advanced use."""
         if self._conn is None:
-            raise RuntimeError(_NOT_CONNECTED)
+            raise RuntimeError(NOT_CONNECTED)
         return self._conn

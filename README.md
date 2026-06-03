@@ -36,7 +36,7 @@ Optional integrations install only what you need:
 | `[cloud]` | `boto3`, `google-cloud-storage`, `google-cloud-bigquery` | S3 / GCS / BigQuery sources & sinks |
 | `[ml]` | `scikit-learn`, `xgboost`, `sentence-transformers` | Train classical ML models, generate embeddings |
 | `[tracking]` | `mlflow` | Experiment tracking via MLflow |
-| `[data]` | `pyspark`, `databricks-cli` | Distributed data processing |
+| `[data]` | `pyspark`, `databricks-cli` | PySpark connector + dbt CLI connector (run dbt models as pipeline steps) |
 
 > **LiteLLM** must be installed separately due to a `python-dotenv` pin conflict:
 >
@@ -63,7 +63,8 @@ ______________________________________________________________________
 | Retrieval | BM25 + dense + hybrid | — |
 | Persistence | DuckDB (`.dex/store.duckdb`) | — |
 | Logging | structlog | — |
-| Privacy | PII detection + masking + audit | — |
+| Privacy | PrivacyGuard — PII detection, masking strategies, outbound call audit | — |
+| Connectors | CSV, Parquet, DuckDB, REST, Kafka | PySpark (`[data]`), dbt CLI (`[data]`) |
 
 **Local-first by default.** A fresh `pip install dataenginex` requires no external services — DuckDB is embedded; nothing reaches the network unless you explicitly configure it (or call a hosted LLM).
 

@@ -14,6 +14,7 @@ import structlog
 
 from dataenginex.core.interfaces import BaseConnector
 from dataenginex.data.connectors import connector_registry
+from dataenginex.data.connectors._utils import NOT_CONNECTED, rows_to_dicts
 
 logger = structlog.get_logger()
 
@@ -49,8 +50,7 @@ class CsvConnector(BaseConnector):
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
         if self._conn is None:
-            msg = "Not connected — call connect() first"
-            raise RuntimeError(msg)
+            raise RuntimeError(NOT_CONNECTED)
 
         # If path itself is a file, use it directly; otherwise treat as directory
         if self._path.is_file():
@@ -72,13 +72,11 @@ class CsvConnector(BaseConnector):
 
         safe_path = str(filepath).replace("'", "''")
         result = self._conn.execute(f"SELECT * FROM read_csv_auto('{safe_path}')")
-        columns = [desc[0] for desc in result.description]
-        return [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
+        return rows_to_dicts(result)
 
     def write(self, data: Any, *, table: str = "output.csv", **kwargs: Any) -> None:
         if self._conn is None:
-            msg = "Not connected — call connect() first"
-            raise RuntimeError(msg)
+            raise RuntimeError(NOT_CONNECTED)
         import pyarrow as pa
         import pyarrow.csv as pcsv
 

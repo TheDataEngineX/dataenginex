@@ -124,6 +124,8 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = [
     "dataenginex.data.quality.spark",
+    "dataenginex.data.connectors.spark",
+    "dataenginex.data.connectors.dbt",
     "dataenginex.ai.vectorstore",
     "dataenginex.lakehouse.storage",
     "dataenginex.ml.training",

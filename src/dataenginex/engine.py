@@ -98,7 +98,14 @@ class DexBackend(Protocol):
 
     def add_pipeline(self, name: str, source: str, schedule: str, destination: str) -> None: ...
     def delete_pipeline(self, name: str) -> None: ...
-    def add_source(self, name: str, type_: str, path: str = "", url: str = "") -> None: ...
+    def add_source(
+        self,
+        name: str,
+        type_: str,
+        path: str = "",
+        url: str = "",
+        connection: dict[str, Any] | None = None,
+    ) -> None: ...
     def delete_source(self, name: str) -> None: ...
     def add_agent(self, name: str, runtime: str, system_prompt: str) -> None: ...
     def delete_agent(self, name: str) -> None: ...
@@ -324,11 +331,21 @@ class DexEngine:
         self.config.data.pipelines.pop(name, None)
         self._save_config()
 
-    def add_source(self, name: str, type_: str, path: str = "", url: str = "") -> None:
+    def add_source(
+        self,
+        name: str,
+        type_: str,
+        path: str = "",
+        url: str = "",
+        connection: dict[str, Any] | None = None,
+    ) -> None:
         from dataenginex.config.schema import SourceConfig
 
         self.config.data.sources[name] = SourceConfig(
-            type=type_, path=path or None, url=url or None
+            type=type_,
+            path=path or None,
+            url=url or None,
+            connection=connection or {},
         )
         self._save_config()
 
@@ -539,7 +556,7 @@ class DexEngine:
         with contextlib.suppress(Exception), duckdb.connect(":memory:") as conn:
             rows = conn.execute(f"DESCRIBE SELECT * FROM {read_fn}('{qpath}') LIMIT 1").fetchall()
             return [
-                {"column_name": r[0], "column_type": r[1], "nullable": r[3] == "YES"} for r in rows
+                {"column_name": r[0], "column_type": r[1], "nullable": r[3] != "NO"} for r in rows
             ]
         return None
 
