@@ -17,7 +17,7 @@ The 1.x versions were published before the project had:
 
 - A confirmed product positioning (now: local-first Data + ML + AI workbench for individuals and small teams)
 - A stable public API surface
-- User feedback validating the design
+- User feedback validating the design.
 
 ### When we'll reach 1.0
 
