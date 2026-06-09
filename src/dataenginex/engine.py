@@ -97,6 +97,10 @@ class DexBackend(Protocol):
     def quality_history(self) -> dict[str, Any]: ...
 
     def add_pipeline(self, name: str, source: str, schedule: str, destination: str) -> None: ...
+    def add_pipeline_transform(self, pipeline: str, step: dict[str, Any]) -> None: ...
+    def delete_pipeline_transform(self, pipeline: str, index: int) -> None: ...
+    def reorder_pipeline_transform(self, pipeline: str, index: int, direction: int) -> None: ...
+    def preview_flow(self, name: str) -> dict[str, Any]: ...
     def delete_pipeline(self, name: str) -> None: ...
     def add_source(
         self,
@@ -326,6 +330,41 @@ class DexEngine:
             source=source, schedule=schedule or None, destination=destination or None
         )
         self._save_config()
+
+    def add_pipeline_transform(self, pipeline: str, step: dict[str, Any]) -> None:
+        """Append a transform step to a pipeline and persist to dex.yaml."""
+        from dataenginex.config.schema import TransformStepConfig
+
+        if pipeline not in self.config.data.pipelines:
+            msg = f"Pipeline '{pipeline}' not found"
+            raise KeyError(msg)
+        self.config.data.pipelines[pipeline].transforms.append(TransformStepConfig(**step))
+        self._save_config()
+
+    def delete_pipeline_transform(self, pipeline: str, index: int) -> None:
+        """Remove the transform step at *index* from a pipeline and persist."""
+        if pipeline not in self.config.data.pipelines:
+            msg = f"Pipeline '{pipeline}' not found"
+            raise KeyError(msg)
+        steps = self.config.data.pipelines[pipeline].transforms
+        if 0 <= index < len(steps):
+            steps.pop(index)
+            self._save_config()
+
+    def reorder_pipeline_transform(self, pipeline: str, index: int, direction: int) -> None:
+        """Move a transform step up (-1) or down (+1) and persist."""
+        if pipeline not in self.config.data.pipelines:
+            msg = f"Pipeline '{pipeline}' not found"
+            raise KeyError(msg)
+        steps = self.config.data.pipelines[pipeline].transforms
+        j = index + direction
+        if 0 <= index < len(steps) and 0 <= j < len(steps):
+            steps[index], steps[j] = steps[j], steps[index]
+            self._save_config()
+
+    def preview_flow(self, name: str) -> dict[str, Any]:
+        """Per-stage row counts for the pipeline flow canvas (sampled, scaled)."""
+        return self.pipeline_runner.preview(name)
 
     def delete_pipeline(self, name: str) -> None:
         self.config.data.pipelines.pop(name, None)
