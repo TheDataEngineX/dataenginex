@@ -14,10 +14,11 @@ Usage::
 from __future__ import annotations
 
 import base64
-import json
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, Field
+
+from dataenginex import _json
 
 T = TypeVar("T")
 
@@ -49,7 +50,7 @@ class PaginatedResponse(BaseModel):
 
 def encode_cursor(offset: int) -> str:
     """Encode an integer offset into an opaque base64 cursor."""
-    return base64.urlsafe_b64encode(json.dumps({"o": offset}).encode()).decode()
+    return base64.urlsafe_b64encode(_json.dumps({"o": offset}).encode()).decode()
 
 
 def decode_cursor(cursor: str) -> int:
@@ -59,9 +60,9 @@ def decode_cursor(cursor: str) -> int:
         ValueError: If the cursor is malformed or cannot be decoded.
     """
     try:
-        data = json.loads(base64.urlsafe_b64decode(cursor))
+        data = _json.loads(base64.urlsafe_b64decode(cursor))
         return int(data["o"])
-    except (json.JSONDecodeError, KeyError, ValueError, UnicodeDecodeError) as exc:
+    except (ValueError, KeyError, UnicodeDecodeError) as exc:
         msg = f"Invalid pagination cursor: {cursor!r}"
         raise ValueError(msg) from exc
 

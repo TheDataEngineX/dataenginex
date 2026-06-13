@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -21,6 +20,8 @@ from typing import Any
 
 import httpx
 import structlog
+
+from dataenginex import _json
 
 logger = structlog.get_logger()
 __all__ = [
@@ -351,10 +352,10 @@ class FileConnector(DataConnector):
     def _load(self) -> list[dict[str, Any]]:
         text = self.path.read_text(encoding=self.encoding)
         if self.file_format == "json":
-            data = json.loads(text)
+            data = _json.loads(text)
             return data if isinstance(data, list) else [data]
         if self.file_format == "jsonl":
-            return [json.loads(line) for line in text.splitlines() if line.strip()]
+            return [_json.loads(line) for line in text.splitlines() if line.strip()]
         # csv
         return self._load_csv(text)
 

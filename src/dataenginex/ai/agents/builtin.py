@@ -13,6 +13,7 @@ from typing import Any
 
 import structlog
 
+from dataenginex import _json
 from dataenginex.ai.agents import agent_registry
 from dataenginex.ai.tools import ToolRegistry, tool_registry
 from dataenginex.core.interfaces import BaseAgentRuntime
@@ -89,7 +90,6 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
 
     async def step(self, message: str, **kwargs: Any) -> dict[str, Any]:
         """Execute one reasoning step."""
-        import json
         import re
 
         iteration = kwargs.get("iteration", 0)
@@ -131,8 +131,8 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
             tool_name = tool_match.group(1).strip()
             args_str = tool_match.group(2).strip()
             try:
-                args = json.loads(args_str)
-            except json.JSONDecodeError:
+                args = _json.loads(args_str)
+            except ValueError:
                 args = {}
             return self._handle_tool_call_parsed(tool_name, args, iteration)
 
@@ -172,14 +172,13 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
         iteration: int,
     ) -> dict[str, Any]:
         """Parse and execute a tool call from raw TOOL:/ARGS: text."""
-        import json
 
         parts = text.split("ARGS:", 1)
         tool_name = parts[0].removeprefix("TOOL:").strip()
         args_str = parts[1].strip() if len(parts) > 1 else "{}"
         try:
-            args = json.loads(args_str)
-        except json.JSONDecodeError:
+            args = _json.loads(args_str)
+        except ValueError:
             args = {}
         return self._handle_tool_call_parsed(tool_name, args, iteration)
 

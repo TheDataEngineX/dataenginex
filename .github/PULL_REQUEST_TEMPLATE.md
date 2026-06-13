@@ -70,6 +70,6 @@ chore: establish org/domain foundation (pages, labels, project automation)
 - [ ] Org/Repo variable set: `ORG_PROJECT_URL`
 - [ ] Org/Repo secret set: `ORG_PROJECT_TOKEN`
 - [ ] Cloudflare DNS updated for docs/api/apex domains
-- [ ] Post-cutover checks completed (see `docs/DEPLOY_RUNBOOK.md` → Org + Domain Rollout)
+- [ ] Post-cutover checks completed
 
 ## Notes for Reviewers

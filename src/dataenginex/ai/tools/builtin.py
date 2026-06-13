@@ -13,10 +13,16 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from dataenginex import _json
 from dataenginex.ai.tools import ToolSpec, tool_registry
 
 if TYPE_CHECKING:
     pass
+
+# Names available after register_builtin_tools() — used by the config validator.
+BUILTIN_TOOL_NAMES: frozenset[str] = frozenset(
+    {"query", "list_tools", "echo", "predict", "search_similar"}
+)
 
 logger = structlog.get_logger()
 
@@ -85,7 +91,6 @@ def _make_predict(
     """
 
     def _predict(model_name: str, features: dict[str, Any]) -> Any:
-        import json
         import pickle
 
         artifact: Path | None = None
@@ -94,7 +99,7 @@ def _make_predict(
         reg = registry_path or models_dir / "registry.json"
         if reg.exists():
             with contextlib.suppress(Exception):
-                data = json.loads(reg.read_text())
+                data = _json.loads(reg.read_text())
                 versions = data.get(model_name, [])
                 if versions:
                     # Prefer production stage, else latest

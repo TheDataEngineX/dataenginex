@@ -7,7 +7,6 @@ For production: use MLflow via ``[mlflow]`` extra.
 
 from __future__ import annotations
 
-import json
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -16,6 +15,7 @@ from typing import Any
 
 import structlog
 
+from dataenginex import _json
 from dataenginex.core.interfaces import BaseTracker
 from dataenginex.ml.tracking import tracker_registry
 
@@ -43,16 +43,16 @@ class BuiltinTracker(BaseTracker):
         exp_file = self._dir / "experiments.json"
         runs_file = self._dir / "runs.json"
         if exp_file.exists():
-            self._experiments = json.loads(exp_file.read_text())
+            self._experiments = _json.loads(exp_file.read_text())
         if runs_file.exists():
-            self._runs = json.loads(runs_file.read_text())
+            self._runs = _json.loads(runs_file.read_text())
 
     def _save(self) -> None:
         """Persist experiments and runs to disk."""
         (self._dir / "experiments.json").write_text(
-            json.dumps(self._experiments, indent=2, default=str)
+            _json.dumps(self._experiments, indent=2, default=str)
         )
-        (self._dir / "runs.json").write_text(json.dumps(self._runs, indent=2, default=str))
+        (self._dir / "runs.json").write_text(_json.dumps(self._runs, indent=2, default=str))
 
     def create_experiment(self, name: str) -> str:
         """Create an experiment, return its ID."""

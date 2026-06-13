@@ -7,7 +7,7 @@ Get a DataEngineX pipeline running in under five minutes.
 ```bash
 pip install dataenginex
 # or from source:
-git clone https://github.com/TheDataEngineX/dex && cd dex
+git clone https://github.com/TheDataEngineX/dataenginex && cd dataenginex
 uv sync
 ```
 
@@ -138,7 +138,7 @@ events = engine.secops_audit.events   # list of AuditEvent
 - [API Reference](api-reference/index.md) — auto-generated module docs
 - `examples/` directory — full list of runnable examples
 
----
+______________________________________________________________________
 
 ## DEX Studio
 

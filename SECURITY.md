@@ -4,7 +4,7 @@
 
 | Version | Supported |
 |---------|-----------|
-| Latest minor release (1.0.x) | ✅ |
+| Latest (0.4.x) | ✅ |
 | Previous minor release | ✅ (security fixes only) |
 | Older versions | ❌ |
 
@@ -15,7 +15,7 @@
 Instead, please report them via one of these channels:
 
 1. **Email**: security@thedataenginex.dev
-2. **GitHub Security Advisories**: Use the "Report a vulnerability" button on the Security tab
+1. **GitHub Security Advisories**: Use the "Report a vulnerability" button on the Security tab
 
 ### What to Include
 
@@ -52,6 +52,8 @@ DataEngineX follows these security practices:
 - **Least privilege** — minimal permissions for service accounts
 
 ## Security-Related Dependencies
+
+*This table is illustrative, not exhaustive.*
 
 | Dependency | Purpose | Security Note |
 |------------|---------|---------------|

@@ -1,7 +1,8 @@
-"""Tests for DexStore — the DuckDB-backed persistence layer."""
+"""Tests for DexStore — the SQLite-backed persistence layer."""
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
 
 import pytest
@@ -16,8 +17,10 @@ from dataenginex.store import (
 
 
 @pytest.fixture()
-def store(tmp_path: Path) -> DexStore:
-    return DexStore(tmp_path / "store.duckdb")
+def store(tmp_path: Path) -> Generator[DexStore]:
+    s = DexStore(tmp_path / "store.duckdb")
+    yield s
+    s.close()
 
 
 class TestPipelineRuns:
@@ -328,8 +331,8 @@ class TestCatalog:
 
 
 class TestConnection:
-    def test_raw_connection_property(self, store: DexStore) -> None:
-        conn = store.connection
+    def test_internal_connection_executes_query(self, store: DexStore) -> None:
+        conn = store._get_conn()
         result = conn.execute("SELECT 42 AS n").fetchone()
         assert result is not None
         assert result[0] == 42

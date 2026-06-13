@@ -8,13 +8,14 @@ a specific schema revision and to track schema evolution.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import structlog
+
+from dataenginex import _json
 
 logger = structlog.get_logger()
 __all__ = [
@@ -140,12 +141,12 @@ class SchemaRegistry:
         for name, versions in self._schemas.items():
             data[name] = [v.to_dict() for v in versions]
         self._persist_path.parent.mkdir(parents=True, exist_ok=True)
-        self._persist_path.write_text(json.dumps(data, indent=2, default=str))
+        self._persist_path.write_text(_json.dumps(data, indent=2, default=str))
 
     def _load(self) -> None:
         if not self._persist_path or not self._persist_path.exists():
             return
-        raw = json.loads(self._persist_path.read_text())
+        raw = _json.loads(self._persist_path.read_text())
         for name, versions in raw.items():
             self._schemas[name] = [
                 SchemaVersion(

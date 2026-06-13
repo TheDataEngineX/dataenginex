@@ -86,6 +86,19 @@ def _build_transform_kwargs(step: TransformStepConfig) -> dict[str, Any]:
     return kwargs
 
 
+def _summarize_step(step: TransformStepConfig) -> str:
+    """One-line human summary of a transform step for the flow canvas."""
+    if step.condition:
+        return step.condition
+    if step.sql:
+        return step.sql.strip().splitlines()[0]
+    if step.key:
+        return f"key: {step.key if isinstance(step.key, str) else ', '.join(step.key)}"
+    if step.name:
+        return f"{step.name} = {step.expression or ''}"
+    return step.type
+
+
 class PipelineRunner:
     """Execute data pipelines defined in dex.yaml.
 
@@ -138,8 +151,7 @@ class PipelineRunner:
             log.info("pipeline dry run — validating only")
             return PipelineResult(pipeline=pipeline_name, success=True, dry_run=True)
 
-        db_path = self._data_dir / f"{pipeline_name}.duckdb"
-        conn = duckdb.connect(str(db_path))
+        conn = duckdb.connect(":memory:")
 
         try:
             return self._execute(conn, pipeline_name, pipeline_config, log)
@@ -170,6 +182,74 @@ class PipelineRunner:
                 break
 
         return results
+
+    def preview(self, pipeline_name: str, sample: int = 200_000) -> dict[str, Any]:
+        """Per-stage row counts for the flow canvas.
+
+        Runs extract + each transform on a *sample* of the source and scales the
+        counts back to full size, so the UI shows how data shrinks/changes as it
+        travels through the pipeline — without a full (heavy) production run.
+        """
+        pipelines = self._config.data.pipelines
+        if pipeline_name not in pipelines:
+            msg = f"Pipeline '{pipeline_name}' not found"
+            raise KeyError(msg)
+        cfg = pipelines[pipeline_name]
+        log = logger.bind(pipeline=pipeline_name, mode="preview")
+        conn = duckdb.connect(":memory:")
+        try:
+            self._register_lakehouse_views(conn, log)
+            rows_input = self._extract(conn, pipeline_name, cfg, log)
+            n = min(rows_input, sample) if rows_input else 0
+            sampled = rows_input > sample
+            if sampled:
+                conn.execute(
+                    f"CREATE OR REPLACE TABLE bronze AS SELECT * FROM bronze LIMIT {sample}"
+                )
+            scale = (rows_input / n) if n else 1.0
+            stages: list[dict[str, Any]] = [
+                {
+                    "kind": "source",
+                    "type": "source",
+                    "label": cfg.source or "source",
+                    "rows": rows_input,
+                    "estimated": False,
+                }
+            ]
+            current = "bronze"
+            for step in cfg.transforms:
+                transform = transform_registry.get(step.type)(**_build_transform_kwargs(step))
+                current = transform.apply(conn, current)
+                row = conn.execute(f"SELECT count(*) FROM {current}").fetchone()
+                cnt = int((row[0] if row else 0) * scale)
+                stages.append(
+                    {
+                        "kind": "transform",
+                        "type": step.type,
+                        "label": _summarize_step(step),
+                        "rows": cnt,
+                        "estimated": sampled,
+                    }
+                )
+            dest_rows = stages[-1]["rows"] if cfg.transforms else rows_input
+            stages.append(
+                {
+                    "kind": "destination",
+                    "type": "destination",
+                    "label": cfg.destination or pipeline_name,
+                    "rows": dest_rows,
+                    "estimated": sampled and bool(cfg.transforms),
+                }
+            )
+            return {
+                "pipeline": pipeline_name,
+                "sampled": sampled,
+                "sample_size": n,
+                "source_rows": rows_input,
+                "stages": stages,
+            }
+        finally:
+            conn.close()
 
     # -------------------------------------------------------------------------
     # Internal pipeline steps

@@ -1,28 +1,48 @@
-"""
-Model registry — local model versioning and stage promotion.
+"""Model registry — local model versioning and stage promotion.
 
 Tracks model artifacts with staging lifecycle:
 ``development`` → ``staging`` → ``production`` → ``archived``.
+
+Backed by SQLite (via DexStore) instead of a JSON file.
+Benefits:
+- Thread-safe without an in-process Lock (WAL handles concurrent writers)
+- Multi-process-safe (CLI + web server can coexist)
+- ``promote()`` is a SQL UPDATE — other threads holding an old reference see a
+  snapshot; the DB is always consistent
+- Crash-safe: ``register()`` is atomic — no partial JSON file on power loss
 """
 
 from __future__ import annotations
 
-import json
-import threading
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import structlog
 
 logger = structlog.get_logger()
+
 __all__ = [
     "ModelArtifact",
     "ModelRegistry",
     "ModelStage",
+    "VERSION_AUTO",
 ]
+
+# Sentinel: pass as artifact.version to get an auto-assigned patch increment.
+VERSION_AUTO = "auto"
+
+
+@runtime_checkable
+class _TrainerProtocol(Protocol):
+    """Minimum interface required by :meth:`ModelRegistry.register_from_trainer`."""
+
+    model_name: str
+    version: str
+
+    def save(self, path: str) -> str: ...
 
 
 class ModelStage(StrEnum):
@@ -63,7 +83,6 @@ class ModelArtifact:
     tags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize the model artifact metadata to a plain dictionary."""
         d = asdict(self)
         d["stage"] = self.stage.value
         d["created_at"] = self.created_at.isoformat()
@@ -72,116 +91,203 @@ class ModelArtifact:
 
 
 class ModelRegistry:
-    """JSON-file-backed model registry.
+    """SQLite-backed model registry.
 
-    Parameters
-    ----------
-    persist_path:
-        Path to a JSON file for persistence (optional).
+    Constructor signatures (all backward-compatible):
+      ModelRegistry()                  — in-memory SQLite (tests, one-shot use)
+      ModelRegistry(persist_path=path) — SQLite file at *path* (any extension)
+      ModelRegistry(store=store)       — share an existing DexStore
+
+    Args:
+        persist_path: Path to a SQLite file for persistence.
+        store: Existing DexStore instance to share (engine integration).
     """
 
-    def __init__(self, persist_path: str | Path | None = None) -> None:
-        # name → version → artifact
-        self._models: dict[str, dict[str, ModelArtifact]] = {}
-        self._persist_path = Path(persist_path) if persist_path else None
-        self._lock = threading.Lock()
-        if self._persist_path and self._persist_path.exists():
-            self._load()
+    def __init__(
+        self,
+        persist_path: str | Path | None = None,
+        *,
+        store: Any = None,
+    ) -> None:
+        from dataenginex.store import DexStore as _DexStore
 
-    # -- registration --------------------------------------------------------
+        if store is not None:
+            self._store = store
+            self._owns_store = False
+        elif persist_path is not None:
+            self._store = _DexStore(Path(persist_path))
+            self._owns_store = True
+        else:
+            self._store = _DexStore(Path(":memory:"))
+            self._owns_store = True
 
-    def register(self, artifact: ModelArtifact) -> ModelArtifact:
-        """Register a new model version."""
-        with self._lock:
-            versions = self._models.setdefault(artifact.name, {})
-            if artifact.version in versions:
+    # -------------------------------------------------------------------------
+    # Registration
+    # -------------------------------------------------------------------------
+
+    def _next_version(self, name: str) -> str:
+        """Return the next patch version for *name* (``major.minor.patch+1``)."""
+        versions = self._store.list_model_versions(name)
+        if not versions:
+            return "1.0.0"
+        best = (0, 0, 0)
+        for v in versions:
+            parts = v.split(".")
+            try:
+                triple = (int(parts[0]), int(parts[1]), int(parts[2]))
+            except (IndexError, ValueError):
+                continue
+            if triple > best:
+                best = triple
+        major, minor, patch = best
+        return f"{major}.{minor}.{patch + 1}"
+
+    def register(
+        self,
+        artifact: ModelArtifact,
+        *,
+        upsert: bool = False,
+    ) -> ModelArtifact:
+        """Register a new model version.
+
+        Args:
+            artifact: Set ``artifact.version = VERSION_AUTO`` to auto-assign
+                the next patch version.
+            upsert: When ``True``, silently bump the patch version on conflict
+                instead of raising ``ValueError``.  Never mutates an existing
+                entry — always creates a new one.
+        """
+        if artifact.version == VERSION_AUTO:
+            artifact.version = self._next_version(artifact.name)
+        elif self._store.get_model(artifact.name, artifact.version) is not None:
+            if not upsert:
                 raise ValueError(
                     f"Model {artifact.name!r} version {artifact.version} already registered"
                 )
-            versions[artifact.version] = artifact
-            logger.info(
-                "Registered model %s v%s (stage=%s)",
-                artifact.name,
-                artifact.version,
-                artifact.stage.value,
-            )
-            self._save()
+            artifact.version = self._next_version(artifact.name)
+
+        self._store.register_model(self._to_store(artifact))
+        logger.info(
+            "registered model",
+            name=artifact.name,
+            version=artifact.version,
+            stage=artifact.stage.value,
+        )
         return artifact
 
-    # -- queries -------------------------------------------------------------
+    def register_from_trainer(
+        self,
+        trainer: _TrainerProtocol,
+        artifact_path: str,
+        *,
+        stage: ModelStage = ModelStage.DEVELOPMENT,
+        metrics: dict[str, float] | None = None,
+        parameters: dict[str, Any] | None = None,
+        description: str = "",
+        tags: list[str] | None = None,
+        upsert: bool = False,
+    ) -> ModelArtifact:
+        """Save *trainer*'s model and register it in one step.
+
+        Calls ``trainer.save(artifact_path)`` first, then delegates to
+        :meth:`register`.  On conflict with ``upsert=True``, the artifact file
+        is saved but the registry entry gets a bumped patch version.
+        """
+        saved_path = trainer.save(artifact_path)
+        artifact = ModelArtifact(
+            name=trainer.model_name,
+            version=trainer.version,
+            stage=stage,
+            artifact_path=saved_path,
+            metrics=metrics or {},
+            parameters=parameters or {},
+            description=description,
+            tags=tags or [],
+        )
+        return self.register(artifact, upsert=upsert)
+
+    # -------------------------------------------------------------------------
+    # Queries
+    # -------------------------------------------------------------------------
 
     def get(self, name: str, version: str) -> ModelArtifact | None:
-        """Return the artifact for *name* at *version*, or ``None``."""
-        return self._models.get(name, {}).get(version)
+        row = self._store.get_model(name, version)
+        return self._from_store(row) if row else None
 
     def get_latest(self, name: str) -> ModelArtifact | None:
         """Return the most recently registered version of *name*."""
-        versions = self._models.get(name)
-        if not versions:
-            return None
-        return list(versions.values())[-1]
+        row = self._store.get_latest_model(name)
+        return self._from_store(row) if row else None
 
     def get_production(self, name: str) -> ModelArtifact | None:
-        """Return the model currently in production stage."""
-        for art in self._models.get(name, {}).values():
-            if art.stage == ModelStage.PRODUCTION:
-                return art
-        return None
+        row = self._store.get_production_model(name)
+        return self._from_store(row) if row else None
 
     def list_models(self) -> list[str]:
-        """Return all registered model names."""
-        return list(self._models.keys())
+        names: list[str] = self._store.list_model_names()
+        return names
 
     def list_versions(self, name: str) -> list[str]:
-        """Return all version strings registered for *name*."""
-        return list(self._models.get(name, {}).keys())
+        versions: list[str] = self._store.list_model_versions(name)
+        return versions
 
-    # -- promotion -----------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # Promotion
+    # -------------------------------------------------------------------------
 
     def promote(self, name: str, version: str, target_stage: ModelStage) -> ModelArtifact:
         """Promote a model version to a new stage.
 
-        If promoting to ``production``, any existing production model is
-        automatically archived.
+        Promoting to ``production`` automatically archives the previous
+        production model in a single atomic SQL transaction — no in-memory
+        object mutation, no race condition.
         """
-        with self._lock:
-            artifact = self.get(name, version)
-            if artifact is None:
-                raise ValueError(f"Model {name!r} version {version} not found")
+        if self._store.get_model(name, version) is None:
+            raise ValueError(f"Model {name!r} version {version} not found")
+        result = self._store.promote_model(name, version, target_stage.value)
+        logger.info("model promoted", name=name, version=version, stage=target_stage.value)
+        return self._from_store(result)
 
-            if target_stage == ModelStage.PRODUCTION:
-                # Archive the current production model
-                current = self.get_production(name)
-                if current and current.version != version:
-                    current.stage = ModelStage.ARCHIVED
-                    logger.info("model archived", name=name, version=current.version)
+    # -------------------------------------------------------------------------
+    # Lifecycle
+    # -------------------------------------------------------------------------
 
-            artifact.stage = target_stage
-            artifact.promoted_at = datetime.now(tz=UTC)
-            logger.info("model promoted", name=name, version=version, stage=target_stage.value)
-            self._save()
-        return artifact
+    def close(self) -> None:
+        if self._owns_store:
+            self._store.close()
 
-    # -- persistence ---------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # Type bridge: registry.ModelArtifact <-> store.ModelArtifact
+    # -------------------------------------------------------------------------
 
-    def _save(self) -> None:
-        if not self._persist_path:
-            return
-        self._persist_path.parent.mkdir(parents=True, exist_ok=True)
-        data: dict[str, list[dict[str, Any]]] = {}
-        for name, versions in self._models.items():
-            data[name] = [v.to_dict() for v in versions.values()]
-        self._persist_path.write_text(json.dumps(data, indent=2, default=str))
+    @staticmethod
+    def _to_store(artifact: ModelArtifact) -> Any:
+        from dataenginex.store import ModelArtifact as _SA
 
-    def _load(self) -> None:
-        if not self._persist_path or not self._persist_path.exists():
-            return
-        raw = json.loads(self._persist_path.read_text())
-        for name, versions in raw.items():
-            self._models[name] = {}
-            for v in versions:
-                v.pop("created_at", None)
-                v.pop("promoted_at", None)
-                v["stage"] = ModelStage(v.get("stage", "development"))
-                self._models[name][v["version"]] = ModelArtifact(**v)
-        logger.info("models loaded", count=len(self._models), path=str(self._persist_path))
+        return _SA(
+            name=artifact.name,
+            version=artifact.version,
+            stage=artifact.stage.value,
+            artifact_path=artifact.artifact_path,
+            metrics=dict(artifact.metrics),
+            parameters=dict(artifact.parameters),
+            description=artifact.description,
+            tags=list(artifact.tags),
+            created_at=artifact.created_at,
+            promoted_at=artifact.promoted_at,
+        )
+
+    @staticmethod
+    def _from_store(row: Any) -> ModelArtifact:
+        return ModelArtifact(
+            name=row.name,
+            version=row.version,
+            stage=ModelStage(row.stage),
+            artifact_path=row.artifact_path,
+            metrics=dict(row.metrics),
+            parameters=dict(row.parameters),
+            description=row.description,
+            tags=list(row.tags),
+            created_at=row.created_at,
+            promoted_at=row.promoted_at,
+        )

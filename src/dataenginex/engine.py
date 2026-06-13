@@ -97,6 +97,10 @@ class DexBackend(Protocol):
     def quality_history(self) -> dict[str, Any]: ...
 
     def add_pipeline(self, name: str, source: str, schedule: str, destination: str) -> None: ...
+    def add_pipeline_transform(self, pipeline: str, step: dict[str, Any]) -> None: ...
+    def delete_pipeline_transform(self, pipeline: str, index: int) -> None: ...
+    def reorder_pipeline_transform(self, pipeline: str, index: int, direction: int) -> None: ...
+    def preview_flow(self, name: str) -> dict[str, Any]: ...
     def delete_pipeline(self, name: str) -> None: ...
     def add_source(
         self,
@@ -154,8 +158,8 @@ class DexEngine:
         # Single persistent store — replaces all JSON files
         self.store = DexStore(self._dex_dir / "store.duckdb")
 
-        # Lakehouse catalog — tracks every dataset written to .dex/lakehouse/
-        self.catalog = DataCatalog(persist_path=self._dex_dir / "catalog.json")
+        # Lakehouse catalog — shares the same SQLite store; eliminates split-brain
+        self.catalog = DataCatalog(store=self.store)
 
         # ML backends — init before pipeline runner so feature_store is available
         self.tracker: Any = self._init_ml_tracker()
@@ -223,7 +227,7 @@ class DexEngine:
             return self.serving_engine._registry
         from dataenginex.ml.registry import ModelRegistry
 
-        return ModelRegistry(persist_path=str(self._dex_dir / "models" / "registry.json"))
+        return ModelRegistry(store=self.store)
 
     @property
     def lineage(self) -> Any:
@@ -326,6 +330,41 @@ class DexEngine:
             source=source, schedule=schedule or None, destination=destination or None
         )
         self._save_config()
+
+    def add_pipeline_transform(self, pipeline: str, step: dict[str, Any]) -> None:
+        """Append a transform step to a pipeline and persist to dex.yaml."""
+        from dataenginex.config.schema import TransformStepConfig
+
+        if pipeline not in self.config.data.pipelines:
+            msg = f"Pipeline '{pipeline}' not found"
+            raise KeyError(msg)
+        self.config.data.pipelines[pipeline].transforms.append(TransformStepConfig(**step))
+        self._save_config()
+
+    def delete_pipeline_transform(self, pipeline: str, index: int) -> None:
+        """Remove the transform step at *index* from a pipeline and persist."""
+        if pipeline not in self.config.data.pipelines:
+            msg = f"Pipeline '{pipeline}' not found"
+            raise KeyError(msg)
+        steps = self.config.data.pipelines[pipeline].transforms
+        if 0 <= index < len(steps):
+            steps.pop(index)
+            self._save_config()
+
+    def reorder_pipeline_transform(self, pipeline: str, index: int, direction: int) -> None:
+        """Move a transform step up (-1) or down (+1) and persist."""
+        if pipeline not in self.config.data.pipelines:
+            msg = f"Pipeline '{pipeline}' not found"
+            raise KeyError(msg)
+        steps = self.config.data.pipelines[pipeline].transforms
+        j = index + direction
+        if 0 <= index < len(steps) and 0 <= j < len(steps):
+            steps[index], steps[j] = steps[j], steps[index]
+            self._save_config()
+
+    def preview_flow(self, name: str) -> dict[str, Any]:
+        """Per-stage row counts for the pipeline flow canvas (sampled, scaled)."""
+        return self.pipeline_runner.preview(name)
 
     def delete_pipeline(self, name: str) -> None:
         self.config.data.pipelines.pop(name, None)
@@ -696,15 +735,6 @@ class DexEngine:
     # -------------------------------------------------------------------------
 
     @contextlib.contextmanager
-    def _duckdb(self) -> Iterator[Any]:
-        """Yield the DexStore's DuckDB connection for store-level writes only.
-
-        Never use this for read-only parquet queries — those must open their own
-        in-memory connection via _duckdb_ro() to avoid cross-thread contention.
-        """
-        yield self.store.connection
-
-    @contextlib.contextmanager
     def _duckdb_ro(self) -> Iterator[Any]:
         """Yield a fresh in-memory DuckDB connection for read-only parquet queries.
 
@@ -790,8 +820,7 @@ class DexEngine:
             from dataenginex.ml.registry import ModelRegistry
             from dataenginex.ml.serving_engine import serving_registry
 
-            registry_path = str(self._dex_dir / "models" / "registry.json")
-            model_registry = ModelRegistry(persist_path=registry_path)
+            model_registry = ModelRegistry(store=self.store)
             cls: Any = cast(Any, serving_registry.get(self.config.ml.serving.engine))
             return cls(model_registry=model_registry, model_dir=str(self._dex_dir / "models"))
         except Exception:

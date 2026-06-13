@@ -124,6 +124,15 @@ class BaseFeatureStore(ABC):
     def list_feature_groups(self) -> list[str]:
         """List all registered feature groups."""
 
+    def feature_group_info(self) -> list[dict[str, str]]:
+        """Return metadata for all feature groups.
+
+        Each dict has keys: ``name``, ``entity``, ``row_count``.
+        Default implementation builds from ``list_feature_groups()``
+        with empty metadata; backends may override for richer detail.
+        """
+        return [{"name": g, "entity": "", "row_count": ""} for g in self.list_feature_groups()]
+
 
 class BaseServingEngine(ABC):
     """Interface for model serving backends."""

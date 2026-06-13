@@ -11,12 +11,12 @@ ReAct-style execution loop:
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from dataenginex import _json
 from dataenginex.ai.memory.base import BaseMemory, MemoryEntry
 from dataenginex.ai.tools import ToolRegistry
 
@@ -154,8 +154,8 @@ class AgentExecutor:
         for line in lines[1:]:
             if line.startswith(_ARGS_PREFIX):
                 try:
-                    args = json.loads(line[len(_ARGS_PREFIX) :].strip())
-                except json.JSONDecodeError:
+                    args = _json.loads(line[len(_ARGS_PREFIX) :].strip())
+                except ValueError:
                     args = {}
                 break
 
