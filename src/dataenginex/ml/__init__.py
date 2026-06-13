@@ -6,8 +6,8 @@ LLM / vectorstore / scheduling live in ``dataenginex.ai`` and
 Public API::
 
     from dataenginex.ml import (
-        BaseTrainer, SklearnTrainer, TrainingResult,
-        ModelRegistry, ModelArtifact, ModelStage,
+        BaseTrainer, PyTorchTrainer, SklearnTrainer, TrainingResult,
+        ModelRegistry, ModelArtifact, ModelStage, VERSION_AUTO,
         MLflowModelRegistry, MLflowRegistryError,
         DriftDetector, DriftReport,
         ModelServer, PredictionRequest, PredictionResponse,
@@ -26,19 +26,21 @@ from .metrics import (
     model_prediction_total,
 )
 from .mlflow_registry import MLflowModelRegistry, MLflowRegistryError
-from .registry import ModelArtifact, ModelRegistry, ModelStage
+from .registry import VERSION_AUTO, ModelArtifact, ModelRegistry, ModelStage
 from .serving import ModelServer, PredictionRequest, PredictionResponse
-from .training import BaseTrainer, SklearnTrainer, TrainingResult
+from .training import BaseTrainer, PyTorchTrainer, SklearnTrainer, TrainingResult
 
 __all__ = [
     # Training
     "BaseTrainer",
+    "PyTorchTrainer",
     "SklearnTrainer",
     "TrainingResult",
     # Registry
     "ModelArtifact",
     "ModelRegistry",
     "ModelStage",
+    "VERSION_AUTO",
     "MLflowModelRegistry",
     "MLflowRegistryError",
     # Drift

@@ -111,6 +111,22 @@ class BuiltinFeatureStore(BaseFeatureStore):
         rows = self._conn.execute("SELECT name FROM _feature_groups ORDER BY name").fetchall()
         return [r[0] for r in rows]
 
+    def feature_group_info(self) -> list[dict[str, str]]:
+        """Return name, entity key, and row count for every feature group."""
+        with self._lock:
+            meta_rows = self._conn.execute(
+                "SELECT name, entity_key FROM _feature_groups ORDER BY name"
+            ).fetchall()
+            result: list[dict[str, str]] = []
+            for name, entity_key in meta_rows:
+                safe = name.replace('"', '""')
+                row = self._conn.execute(
+                    f'SELECT COUNT(*) FROM "{safe}"'  # noqa: S608
+                ).fetchone()
+                count = f"{row[0]:,}" if row else ""
+                result.append({"name": name, "entity": str(entity_key), "row_count": count})
+        return result
+
     def close(self) -> None:
         """Close the DuckDB connection."""
         self._conn.close()

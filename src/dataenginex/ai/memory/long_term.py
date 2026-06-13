@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import asdict
 from pathlib import Path
 
+from dataenginex import _json
 from dataenginex.ai.memory.base import BaseMemory, MemoryEntry
 
 
@@ -44,9 +44,9 @@ class LongTermMemory(BaseMemory):
     def persist(self, path: str) -> None:
         """Persist all memory entries to a JSON file at *path*."""
         data = [asdict(e) for e in self._entries]
-        Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
+        Path(path).write_text(_json.dumps(data, indent=2), encoding="utf-8")
 
     def load_from_file(self, path: str) -> None:
         """Replace in-memory entries with those from a JSON file at *path*."""
-        raw: list[dict[str, object]] = json.loads(Path(path).read_text(encoding="utf-8"))
+        raw: list[dict[str, object]] = _json.loads(Path(path).read_text(encoding="utf-8"))
         self._entries = [MemoryEntry(**item) for item in raw]  # type: ignore[arg-type]

@@ -158,8 +158,8 @@ class DexEngine:
         # Single persistent store — replaces all JSON files
         self.store = DexStore(self._dex_dir / "store.duckdb")
 
-        # Lakehouse catalog — tracks every dataset written to .dex/lakehouse/
-        self.catalog = DataCatalog(persist_path=self._dex_dir / "catalog.json")
+        # Lakehouse catalog — shares the same SQLite store; eliminates split-brain
+        self.catalog = DataCatalog(store=self.store)
 
         # ML backends — init before pipeline runner so feature_store is available
         self.tracker: Any = self._init_ml_tracker()
@@ -227,7 +227,7 @@ class DexEngine:
             return self.serving_engine._registry
         from dataenginex.ml.registry import ModelRegistry
 
-        return ModelRegistry(persist_path=str(self._dex_dir / "models" / "registry.json"))
+        return ModelRegistry(store=self.store)
 
     @property
     def lineage(self) -> Any:
@@ -735,15 +735,6 @@ class DexEngine:
     # -------------------------------------------------------------------------
 
     @contextlib.contextmanager
-    def _duckdb(self) -> Iterator[Any]:
-        """Yield the DexStore's DuckDB connection for store-level writes only.
-
-        Never use this for read-only parquet queries — those must open their own
-        in-memory connection via _duckdb_ro() to avoid cross-thread contention.
-        """
-        yield self.store.connection
-
-    @contextlib.contextmanager
     def _duckdb_ro(self) -> Iterator[Any]:
         """Yield a fresh in-memory DuckDB connection for read-only parquet queries.
 
@@ -829,8 +820,7 @@ class DexEngine:
             from dataenginex.ml.registry import ModelRegistry
             from dataenginex.ml.serving_engine import serving_registry
 
-            registry_path = str(self._dex_dir / "models" / "registry.json")
-            model_registry = ModelRegistry(persist_path=registry_path)
+            model_registry = ModelRegistry(store=self.store)
             cls: Any = cast(Any, serving_registry.get(self.config.ml.serving.engine))
             return cls(model_registry=model_registry, model_dir=str(self._dex_dir / "models"))
         except Exception:

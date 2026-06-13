@@ -7,6 +7,7 @@ through ``read_parquet``.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -101,7 +102,9 @@ class ParquetConnector(BaseConnector):
         else:
             msg = f"Unsupported data type: {type(data)}"
             raise TypeError(msg)
-        pq.write_table(tbl, filepath)  # type: ignore[no-untyped-call]
+        tmp = Path(str(filepath) + ".tmp")
+        pq.write_table(tbl, str(tmp))  # type: ignore[no-untyped-call]
+        os.replace(tmp, filepath)
         logger.info("parquet written", path=str(filepath), rows=len(tbl))
 
     def health_check(self) -> bool:

@@ -1,5 +1,7 @@
 # dataenginex Release Notes
 
+See [docs/release-notes.md](docs/release-notes.md) for the complete release history.
+
 This document tracks published package releases for `dataenginex` only.
 Only include changes that modify files under `src/dataenginex/**`.
 

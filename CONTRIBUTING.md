@@ -7,7 +7,7 @@ Thank you for your interest in contributing to DataEngineX!
 Quick essentials:
 
 - Development setup: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
-- Governance & legal: [GOVERNANCE.md](GOVERNANCE.md)
+- Governance & legal: See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)
 - Code of Conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
 ## Quick Start

@@ -9,7 +9,7 @@ on:
 
   schedule:
     # Weekly Python version compatibility check
-    - cron: '0 0 * * 0'
+    - cron: "0 0 * * 0"
 
 permissions:
   contents: read
@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v8.2.0
         with:
           version: "latest"
           python-version: "3.13"
@@ -35,7 +35,7 @@ jobs:
     needs: quality
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v8.2.0
         with:
           version: "latest"
           python-version: "3.13"
@@ -43,7 +43,7 @@ jobs:
         env:
           UV_PROJECT_ENVIRONMENT: .venv
       - run: uv run poe test-cov-core
-      - uses: codecov/codecov-action@v5
+      - uses: codecov/codecov-action@v7
         with:
           flags: dataenginex
           fail_ci_if_error: false
@@ -59,7 +59,7 @@ jobs:
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v8.2.0
         with:
           version: "latest"
           python-version: ${{ matrix.python-version }}

@@ -199,7 +199,7 @@ ______________________________________________________________________
 **Operations:**
 
 - **Deployment Runbook** (in `infradex` repo) - Release procedures
-- **[Project Roadmap](roadmap/project-roadmap.csv)** - Issue tracking and milestone source
+- **Project Roadmap** (in the external `docs` repository) - Issue tracking and milestone source
 
 ______________________________________________________________________
 

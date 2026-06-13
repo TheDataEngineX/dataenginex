@@ -15,18 +15,20 @@ operations but require ``boto3`` / ``google-cloud-storage`` at runtime.
 
 from __future__ import annotations
 
-import json
+import os
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from dataenginex import _json
 from dataenginex.core.medallion_architecture import StorageBackend, StorageFormat
 
 logger = structlog.get_logger()
 
 __all__ = [
     "BigQueryStorage",
+    "DeltaStorage",
     "GCSStorage",
     "JsonStorage",
     "ParquetStorage",
@@ -71,7 +73,9 @@ class JsonStorage(StorageBackend):
             full = self.base_path / f"{path}.json"
             full.parent.mkdir(parents=True, exist_ok=True)
             records = self._normalise(data)
-            full.write_text(json.dumps(records, indent=2, default=str))
+            tmp = full.with_suffix(".tmp")
+            tmp.write_text(_json.dumps(records, indent=2, default=str))
+            os.replace(tmp, full)
             logger.info("wrote records", count=len(records), path=str(full))
             return True
         except Exception as exc:
@@ -85,7 +89,7 @@ class JsonStorage(StorageBackend):
             if not full.exists():
                 logger.warning("file not found", path=str(full))
                 return None
-            return json.loads(full.read_text())
+            return _json.loads(full.read_text())
         except Exception as exc:
             logger.error("json storage read failed", exc=str(exc))
             return None
@@ -137,7 +141,7 @@ class ParquetStorage(StorageBackend):
     Falls back to ``JsonStorage`` when *pyarrow* is not installed.
     """
 
-    def __init__(self, base_path: str = "data", compression: str = "snappy") -> None:
+    def __init__(self, base_path: str = "data", compression: str = "zstd") -> None:
         self.base_path = Path(base_path)
         self.base_path.mkdir(parents=True, exist_ok=True)
         self.compression = compression
@@ -166,7 +170,9 @@ class ParquetStorage(StorageBackend):
                 logger.warning("no records to write", path=str(full))
                 return False
             table = pa.Table.from_pylist(records)
-            pq.write_table(table, str(full), compression=self.compression)  # type: ignore[no-untyped-call]
+            tmp = full.with_suffix(".tmp")
+            pq.write_table(table, str(tmp), compression=self.compression)  # type: ignore[no-untyped-call]
+            os.replace(tmp, full)
             logger.info("wrote records", count=len(records), path=str(full))
             return True
         except Exception as exc:
@@ -230,6 +236,154 @@ class ParquetStorage(StorageBackend):
         if not _HAS_PYARROW:
             return self._fallback.exists(path)
         return (self.base_path / f"{path}.parquet").exists()
+
+
+# ---------------------------------------------------------------------------
+# Delta Lake storage (requires deltalake + pyarrow)
+# ---------------------------------------------------------------------------
+
+try:
+    import deltalake as _deltalake_mod  # noqa: F401 — presence check only
+
+    _HAS_DELTALAKE = True
+except ImportError:
+    _HAS_DELTALAKE = False
+
+
+class DeltaStorage(StorageBackend):
+    """Delta Lake storage backend — ACID transactions, time travel, schema evolution.
+
+    Requires ``deltalake>=0.24.0`` (``pip install 'dataenginex[delta]'``).
+    Logs a warning and returns ``False``/``None`` when absent — same
+    graceful-degradation pattern as the other cloud backends.
+
+    Each table lives at ``{base_path}/{path}/`` (a Delta table directory
+    with ``_delta_log/`` transaction log).  Concurrent writers use
+    optimistic concurrency control — conflicts retry, never corrupt.
+
+    Parameters
+    ----------
+    base_path:
+        Root directory under which all Delta tables are stored.
+    mode:
+        Default write mode passed to ``write_deltalake()``:
+        ``"append"`` (default), ``"overwrite"``, ``"error"``, ``"ignore"``.
+        Can be overridden per ``write()`` call via kwargs.
+    """
+
+    def __init__(self, base_path: str = "data", mode: str = "append") -> None:
+        self.base_path = Path(base_path)
+        self.base_path.mkdir(parents=True, exist_ok=True)
+        self.mode = mode
+        if _HAS_DELTALAKE:
+            logger.info("delta storage initialised", path=str(self.base_path))
+        else:
+            logger.warning(
+                "deltalake not installed — delta storage unavailable",
+                hint="pip install 'dataenginex[delta]'",
+            )
+
+    def _table_path(self, path: str) -> str:
+        return str(self.base_path / path)
+
+    def write(
+        self,
+        data: Any,
+        path: str,
+        format: StorageFormat = StorageFormat.PARQUET,
+        **kwargs: Any,
+    ) -> bool:
+        """Write *data* as a Delta table at *path*.
+
+        ``**kwargs`` are forwarded to ``write_deltalake()``
+        (e.g. ``mode=``, ``schema_mode=``, ``partition_by=``).
+        """
+        if not _HAS_DELTALAKE:
+            logger.error("delta storage: deltalake not installed")
+            return False
+        try:
+            import pyarrow as _pa  # noqa: PLC0415
+            from deltalake import write_deltalake  # noqa: PLC0415
+
+            records = self._to_records(data)
+            if not records:
+                logger.warning("no records to write", path=path)
+                return False
+            arrow_table = _pa.Table.from_pylist(records)
+            table_path = self._table_path(path)
+            write_deltalake(
+                table_path,
+                arrow_table,
+                mode=kwargs.pop("mode", self.mode),
+                **kwargs,
+            )
+            logger.info("wrote delta records", count=len(records), path=table_path)
+            return True
+        except Exception as exc:
+            logger.error("delta storage write failed", exc=str(exc))
+            return False
+
+    def read(self, path: str, format: StorageFormat = StorageFormat.PARQUET) -> Any:
+        """Read all rows from the Delta table at *path*.
+
+        Returns a list of dicts — same shape as the other backends.
+        """
+        if not _HAS_DELTALAKE:
+            logger.error("delta storage: deltalake not installed")
+            return None
+        try:
+            from deltalake import DeltaTable  # noqa: PLC0415
+
+            table_path = self._table_path(path)
+            if not (Path(table_path) / "_delta_log").exists():
+                logger.warning("delta table not found", path=table_path)
+                return None
+            dt = DeltaTable(table_path)
+            return dt.to_pyarrow_table().to_pylist()
+        except Exception as exc:
+            logger.error("delta storage read failed", exc=str(exc))
+            return None
+
+    def delete(self, path: str) -> bool:
+        """Remove the Delta table directory at *path* entirely."""
+        try:
+            import shutil  # noqa: PLC0415
+
+            table_path = Path(self._table_path(path))
+            if table_path.exists():
+                shutil.rmtree(table_path)
+                logger.info("deleted delta table", path=str(table_path))
+            return True
+        except Exception as exc:
+            logger.error("delta storage delete failed", exc=str(exc))
+            return False
+
+    def list_objects(self, prefix: str = "") -> list[str]:
+        """Return paths of all Delta tables under *prefix* (relative to base_path)."""
+        try:
+            target = self.base_path / prefix if prefix else self.base_path
+            if not target.exists():
+                return []
+            return [
+                str(p.parent.relative_to(self.base_path))
+                for p in target.rglob("_delta_log")
+                if p.is_dir()
+            ]
+        except Exception as exc:
+            logger.error("delta storage list_objects failed", exc=str(exc))
+            return []
+
+    def exists(self, path: str) -> bool:
+        """Return ``True`` if a Delta table exists at *path*."""
+        return (Path(self._table_path(path)) / "_delta_log").exists()
+
+    @staticmethod
+    def _to_records(data: Any) -> list[dict[str, Any]]:
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return [data]
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +454,7 @@ class S3Storage(StorageBackend):
             return False
         try:
             records = data if isinstance(data, list) else [data]
-            body = json.dumps(records, default=str).encode()
+            body = _json.dumps(records, default=str).encode()
             key = self._key(f"{path}.json")
             self._client.put_object(Bucket=self.bucket, Key=key, Body=body)
             logger.info("wrote records to s3", count=len(records), uri=f"s3://{self.bucket}/{key}")
@@ -318,7 +472,7 @@ class S3Storage(StorageBackend):
             key = self._key(f"{path}.json")
             response = self._client.get_object(Bucket=self.bucket, Key=key)
             body = response["Body"].read().decode()
-            return json.loads(body)
+            return _json.loads(body)
         except Exception as exc:
             logger.error("s3 storage read failed", exc=str(exc))
             return None
@@ -607,7 +761,7 @@ class GCSStorage(StorageBackend):
             return False
         try:
             records = data if isinstance(data, list) else [data]
-            body = json.dumps(records, default=str)
+            body = _json.dumps(records, default=str)
             blob = self._bucket.blob(self._blob_name(f"{path}.json"))
             blob.upload_from_string(body, content_type="application/json")
             logger.info(
@@ -628,7 +782,7 @@ class GCSStorage(StorageBackend):
         try:
             blob = self._bucket.blob(self._blob_name(f"{path}.json"))
             body = blob.download_as_text()
-            return json.loads(body)
+            return _json.loads(body)
         except Exception as exc:
             logger.error("gcs storage read failed", exc=str(exc))
             return None
@@ -718,5 +872,8 @@ def get_storage(uri: str, **kwargs: Any) -> StorageBackend:
             dataset=parsed.path.lstrip("/") or "dex",
             **kwargs,
         )
+    if parsed.scheme == "delta":
+        base = (parsed.netloc + parsed.path).lstrip("/") or "data"
+        return DeltaStorage(base_path=base, **kwargs)
     msg = f"Unsupported storage URI scheme: {parsed.scheme!r}"
     raise ValueError(msg)

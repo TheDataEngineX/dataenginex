@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import secrets
 import threading
 from dataclasses import asdict, dataclass, field
@@ -12,6 +11,7 @@ from typing import Any
 
 import structlog
 
+from dataenginex import _json
 from dataenginex.data.pipeline.runner import PipelineResult
 
 logger = structlog.get_logger()
@@ -76,14 +76,14 @@ class PipelineRunHistory:
     def _save(self) -> None:
         self._persist_path.parent.mkdir(parents=True, exist_ok=True)
         self._persist_path.write_text(
-            json.dumps([r.to_dict() for r in self._records], indent=2, default=str)
+            _json.dumps([r.to_dict() for r in self._records], indent=2, default=str)
         )
 
     def _load(self) -> None:
         try:
-            raw = json.loads(self._persist_path.read_text())
+            raw = _json.loads(self._persist_path.read_text())
             for item in raw:
                 self._records.append(PipelineRunRecord(**item))
-        except (json.JSONDecodeError, TypeError, KeyError) as exc:
+        except (ValueError, TypeError, KeyError) as exc:
             logger.warning("run history corrupted, starting fresh", error=str(exc))
             self._records = []

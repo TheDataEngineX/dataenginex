@@ -2,7 +2,7 @@
 
 The Python library that powers [DEX Studio](https://github.com/TheDataEngineX/dex-studio) — an open-source, self-hosted, local-first Data + ML + AI workbench. Use the library directly when you want code, not a UI.
 
-> **Pre-1.0 status.** `0.4.0` is honest about that. See the [scope reset CHANGELOG](https://github.com/TheDataEngineX/dex/blob/main/CHANGELOG.md) for the rationale.
+> **Pre-1.0 status.** `0.4.0` is honest about that. See the [scope reset CHANGELOG](https://github.com/TheDataEngineX/dataenginex/blob/main/CHANGELOG.md) for the rationale.
 
 ## Install
 
@@ -98,9 +98,9 @@ DEX Studio imports `dataenginex` directly — no separate API server.
 
 ## Links
 
-- Source: [github.com/TheDataEngineX/dex](https://github.com/TheDataEngineX/dex)
+- Source: [github.com/TheDataEngineX/dataenginex](https://github.com/TheDataEngineX/dataenginex)
 - Docs: [docs.thedataenginex.org](https://docs.thedataenginex.org)
 - Roadmap: [docs/docs/roadmap/DESIGN-2026.md](https://github.com/TheDataEngineX/docs/blob/main/docs/roadmap/DESIGN-2026.md)
 - ADRs: [docs/adr/](https://github.com/TheDataEngineX/docs/tree/main/adr)
-- Issues: [github.com/TheDataEngineX/dex/issues](https://github.com/TheDataEngineX/dex/issues)
+- Issues: [github.com/TheDataEngineX/dataenginex/issues](https://github.com/TheDataEngineX/dataenginex/issues)
 - License: MIT

@@ -124,7 +124,7 @@ ______________________________________________________________________
 
 ## Release Automation
 
-**Workflow**: [`.github/workflows/release.yml`](https://github.com/TheDataEngineX/dex/blob/main/.github/workflows/release.yml)
+**Workflow**: [`.github/workflows/release.yml`](https://github.com/TheDataEngineX/dataenginex/blob/main/.github/workflows/release.yml)
 
 **Trigger**: Push a tag matching `v[0-9]+.[0-9]+.[0-9]+` to `main`
 

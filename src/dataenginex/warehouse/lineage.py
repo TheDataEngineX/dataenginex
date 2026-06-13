@@ -7,7 +7,6 @@ the medallion layers, persisting the graph to disk so it survives restarts.
 
 from __future__ import annotations
 
-import json
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -16,6 +15,8 @@ from pathlib import Path
 from typing import Any, Protocol, cast, runtime_checkable
 
 import structlog
+
+from dataenginex import _json
 
 logger = structlog.get_logger()
 __all__ = [
@@ -193,13 +194,13 @@ class PersistentLineage:
             return
         self._persist_path.parent.mkdir(parents=True, exist_ok=True)
         data = [ev.to_dict() for ev in self._events]
-        self._persist_path.write_text(json.dumps(data, indent=2, default=str))
+        self._persist_path.write_text(_json.dumps(data, indent=2, default=str))
 
     def _load(self) -> None:
         if not self._persist_path or not self._persist_path.exists():
             return
         try:
-            raw = json.loads(self._persist_path.read_text())
+            raw = _json.loads(self._persist_path.read_text())
             for item in raw:
                 item.pop("timestamp", None)
                 self._events.append(LineageEvent(**item))
@@ -208,7 +209,7 @@ class PersistentLineage:
                 count=len(self._events),
                 path=str(self._persist_path),
             )
-        except (json.JSONDecodeError, TypeError, KeyError) as exc:
+        except (ValueError, TypeError, KeyError) as exc:
             logger.warning(
                 "lineage file corrupted, starting fresh",
                 path=str(self._persist_path),
@@ -345,7 +346,7 @@ class PostgresLineage:
                 ev.quality_score,
                 ev.pipeline_name,
                 ev.step_name,
-                json.dumps(ev.metadata),
+                _json.dumps(ev.metadata),
                 ev.timestamp,
             )
         finally:
@@ -354,7 +355,7 @@ class PostgresLineage:
     def _row_to_event(self, row: Any) -> LineageEvent:
         raw_meta = row["metadata"]
         meta: dict[str, Any] = (
-            json.loads(raw_meta) if isinstance(raw_meta, str) else dict(raw_meta or {})
+            _json.loads(raw_meta) if isinstance(raw_meta, str) else dict(raw_meta or {})
         )
         return LineageEvent(
             event_id=row["event_id"],

@@ -4,6 +4,8 @@
 **Date**: 2026-02-15
 **Authors**: Data Engineering Team
 
+> **Note:** Implementation details (tooling, storage) have evolved since this ADR was written. See [docs/architecture.md](docs/architecture.md) for the current design. References to ADR-0002, ADR-0003, and ADR-0004 are placeholders for decisions that were planned but not written.
+
 ## Context
 
 DEX needs a scalable, standardized data architecture that works across all projects (CareerDEX, Weather, etc.). The data pipeline needs to handle:

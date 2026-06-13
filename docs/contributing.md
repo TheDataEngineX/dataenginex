@@ -69,7 +69,7 @@ Use semantic commit format:
 - This project is open source under MIT; keep license and attribution notices in redistributions.
 - Forks are welcome, but should use a distinct public name when redistributed as a separate project.
 - Do not present a fork as the official DataEngineX/DEX project.
-- See [Trademark Policy](https://github.com/TheDataEngineX/dataenginex/blob/main/TRADEMARK_POLICY.md) for brand-usage details.
+- See the project's license and brand guidelines for brand-usage details.
 
 ## Code Reviews
 

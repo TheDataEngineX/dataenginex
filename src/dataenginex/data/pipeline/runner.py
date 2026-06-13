@@ -151,8 +151,7 @@ class PipelineRunner:
             log.info("pipeline dry run — validating only")
             return PipelineResult(pipeline=pipeline_name, success=True, dry_run=True)
 
-        db_path = self._data_dir / f"{pipeline_name}.duckdb"
-        conn = duckdb.connect(str(db_path))
+        conn = duckdb.connect(":memory:")
 
         try:
             return self._execute(conn, pipeline_name, pipeline_config, log)

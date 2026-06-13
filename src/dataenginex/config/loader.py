@@ -127,9 +127,16 @@ def _validate_pipelines(config: DexConfig) -> list[str]:
     errors: list[str] = []
     source_names = set(config.data.sources.keys())
     pipeline_names = set(config.data.pipelines.keys())
+    pipeline_destinations = {
+        cfg.destination for cfg in config.data.pipelines.values() if cfg.destination
+    }
 
     for pipe_name, pipe_cfg in config.data.pipelines.items():
-        if pipe_cfg.source and pipe_cfg.source not in source_names:
+        if (
+            pipe_cfg.source
+            and pipe_cfg.source not in source_names
+            and pipe_cfg.source not in pipeline_destinations
+        ):
             errors.append(f"Pipeline '{pipe_name}' references undefined source '{pipe_cfg.source}'")
         for dep in pipe_cfg.depends_on:
             if dep not in pipeline_names:
@@ -146,6 +153,7 @@ def _validate_registries(config: DexConfig) -> list[str]:
     import dataenginex.ml.tracking.builtin  # noqa: F401
     from dataenginex.ai.agents import agent_registry
     from dataenginex.ai.tools import tool_registry
+    from dataenginex.ai.tools.builtin import BUILTIN_TOOL_NAMES
     from dataenginex.core.registry import BackendRegistry
     from dataenginex.ml.features import feature_store_registry
     from dataenginex.ml.serving_engine import serving_registry
@@ -172,7 +180,7 @@ def _validate_registries(config: DexConfig) -> list[str]:
                 f"(available: {agent_registry.list()})"
             )
         for tool_name in agent_cfg.tools:
-            if tool_name not in tool_registry._tools:
+            if tool_name not in tool_registry._tools and tool_name not in BUILTIN_TOOL_NAMES:
                 warnings.append(
                     f"Warning: agent '{agent_name}' references unknown tool '{tool_name}'"
                 )

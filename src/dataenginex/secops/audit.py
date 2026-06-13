@@ -2,26 +2,30 @@
 
 Every time PII is detected or masked, an ``AuditEvent`` is emitted via
 structlog (structured key-value format) and persisted via the configured
-backend (default: DuckDB in-memory; pass a file path for persistence).
+backend (SQLite WAL by default).
 
 This is NOT a replacement for a production audit trail (e.g. SIEM).
 It is a lightweight in-process layer that makes PII handling observable
 and testable without external infrastructure.
 
-Note: ``AuditLogger`` is not thread-safe. The underlying DuckDB connection
-has no locking — consistent with the previous in-memory behaviour.
+Thread-safety: SQLite WAL mode with per-thread connections.  Multiple
+threads in dex-studio's web server can call ``AuditLogger.log()``
+concurrently without races.  The previous DuckDB backend had an explicit
+"not thread-safe" disclaimer and a racy ``_seq`` integer counter.
 """
 
 from __future__ import annotations
 
-import json
+import sqlite3
+import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-import duckdb
 import structlog
+
+from dataenginex import _json
 
 logger = structlog.get_logger()
 
@@ -33,7 +37,7 @@ __all__ = [
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS audit_events (
-    rowid        INTEGER PRIMARY KEY,
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
     operation    TEXT NOT NULL,
     dataset_name TEXT NOT NULL,
     pii_fields   TEXT NOT NULL,
@@ -46,14 +50,14 @@ CREATE TABLE IF NOT EXISTS audit_events (
 
 _INSERT = """
 INSERT INTO audit_events
-    (rowid, operation, dataset_name, pii_fields, record_count, actor, metadata, occurred_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    (operation, dataset_name, pii_fields, record_count, actor, metadata, occurred_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 """
 
 _EVICT = """
 DELETE FROM audit_events
-WHERE rowid NOT IN (
-    SELECT rowid FROM audit_events ORDER BY rowid DESC LIMIT ?
+WHERE id NOT IN (
+    SELECT id FROM audit_events ORDER BY id DESC LIMIT ?
 )
 """
 
@@ -101,61 +105,91 @@ class AuditEvent:
         }
 
 
-class _DuckDBAuditBackend:
-    """DuckDB-backed audit store (in-memory or file-based)."""
+class _SQLiteAuditBackend:
+    """SQLite WAL-backed audit store — thread-safe, multi-process-safe."""
 
     def __init__(self, db_path: str, max_history: int) -> None:
-        self._conn = duckdb.connect(db_path)
+        self._db_path = db_path
         self._max = max_history
-        self._conn.execute(_CREATE_TABLE)
-        # Sequence counter — survives across sessions via MAX(rowid).
-        row = self._conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM audit_events").fetchone()
-        self._seq: int = int(row[0]) if row else 0
+        self._in_memory = db_path == ":memory:"
+        self._lock = threading.Lock()
+
+        if self._in_memory:
+            self._mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
+            with self._mem_conn:
+                self._mem_conn.execute(_CREATE_TABLE)
+        else:
+            self._tls: threading.local = threading.local()
+            with self._get_conn() as conn:
+                conn.execute(_CREATE_TABLE)
+
+    def _get_conn(self) -> sqlite3.Connection:
+        if self._in_memory:
+            return self._mem_conn
+        if not hasattr(self._tls, "conn") or self._tls.conn is None:
+            conn = sqlite3.connect(self._db_path, timeout=10.0, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            self._tls.conn = conn
+        return self._tls.conn  # type: ignore[no-any-return]
 
     def append(self, event: AuditEvent) -> None:
-        self._seq += 1
-        self._conn.execute(
-            _INSERT,
-            [
-                self._seq,
-                event.operation.value,
-                event.dataset_name,
-                json.dumps(event.pii_fields),
-                event.record_count,
-                event.actor,
-                json.dumps(event.metadata),
-                event.occurred_at.isoformat(),
-            ],
-        )
-        self._conn.execute(_EVICT, [self._max])
+        # AUTOINCREMENT — no _seq counter, no race condition
+        with self._lock, self._get_conn() as conn:
+            conn.execute(
+                _INSERT,
+                [
+                    event.operation.value,
+                    event.dataset_name,
+                    _json.dumps(event.pii_fields),
+                    event.record_count,
+                    event.actor,
+                    _json.dumps(event.metadata),
+                    event.occurred_at.isoformat(),
+                ],
+            )
+            conn.execute(_EVICT, [self._max])
 
     def all(self) -> list[AuditEvent]:
-        rows = self._conn.execute(
-            "SELECT operation, dataset_name, pii_fields, record_count, "
-            "actor, metadata, occurred_at "
-            "FROM audit_events ORDER BY rowid ASC"
-        ).fetchall()
+        rows = (
+            self._get_conn()
+            .execute(
+                "SELECT operation, dataset_name, pii_fields, record_count, "
+                "actor, metadata, occurred_at "
+                "FROM audit_events ORDER BY id ASC"
+            )
+            .fetchall()
+        )
         return [self._row_to_event(r) for r in rows]
 
     def filter_by_dataset(self, dataset_name: str) -> list[AuditEvent]:
-        rows = self._conn.execute(
-            "SELECT operation, dataset_name, pii_fields, record_count, "
-            "actor, metadata, occurred_at "
-            "FROM audit_events WHERE dataset_name = ? ORDER BY rowid ASC",
-            [dataset_name],
-        ).fetchall()
+        rows = (
+            self._get_conn()
+            .execute(
+                "SELECT operation, dataset_name, pii_fields, record_count, "
+                "actor, metadata, occurred_at "
+                "FROM audit_events WHERE dataset_name = ? ORDER BY id ASC",
+                [dataset_name],
+            )
+            .fetchall()
+        )
         return [self._row_to_event(r) for r in rows]
 
     def clear(self) -> None:
-        self._conn.execute("DELETE FROM audit_events")
+        with self._lock, self._get_conn() as conn:
+            conn.execute("DELETE FROM audit_events")
 
     def close(self) -> None:
-        self._conn.close()
+        if self._in_memory:
+            self._mem_conn.close()
+        elif hasattr(self._tls, "conn") and self._tls.conn is not None:
+            self._tls.conn.close()
+            self._tls.conn = None
 
     @staticmethod
     def _row_to_event(row: tuple[Any, ...]) -> AuditEvent:
-        pii_fields: list[str] = [str(x) for x in json.loads(row[2])]
-        meta: dict[str, Any] = json.loads(row[5])
+        pii_fields: list[str] = [str(x) for x in _json.loads(row[2])]
+        meta: dict[str, Any] = _json.loads(row[5])
         return AuditEvent(
             operation=AuditOperation(row[0]),
             dataset_name=row[1],
@@ -168,24 +202,27 @@ class _DuckDBAuditBackend:
 
 
 class AuditLogger:
-    """Audit log for SecOps operations backed by DuckDB.
+    """Audit log for SecOps operations backed by SQLite WAL.
 
     Emits structured structlog events on every write and persists events
-    in a DuckDB database (in-memory by default, file-backed when *db_path*
+    in a SQLite database (in-memory by default, file-backed when *db_path*
     is a filesystem path).
+
+    Thread-safe: WAL mode + per-thread connections.  Multiple web-server
+    workers can call ``log()`` concurrently without corruption.
 
     Parameters
     ----------
     max_history:
         Maximum number of events to retain (FIFO eviction by insertion order).
     db_path:
-        DuckDB database path. Defaults to ``":memory:"`` (no persistence).
+        SQLite database path. Defaults to ``":memory:"`` (no persistence).
         Pass a file path (e.g. ``"/var/lib/dex/audit.db"``) for persistence
         across restarts.
     """
 
     def __init__(self, max_history: int = 1000, db_path: str = ":memory:") -> None:
-        self._backend = _DuckDBAuditBackend(db_path, max_history)
+        self._backend = _SQLiteAuditBackend(db_path, max_history)
 
     def log(self, event: AuditEvent) -> None:
         """Record an audit event (backend + structlog)."""
@@ -254,5 +291,11 @@ class AuditLogger:
         self._backend.clear()
 
     def close(self) -> None:
-        """Release the DuckDB connection. Important for file-backed databases."""
+        """Release the SQLite connection. Important for file-backed databases."""
         self._backend.close()
+
+    def __del__(self) -> None:
+        import contextlib  # noqa: PLC0415
+
+        with contextlib.suppress(Exception):
+            self.close()

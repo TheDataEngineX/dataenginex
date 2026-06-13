@@ -37,7 +37,7 @@ This installs all Python dependencies and configures pre-commit hooks.
 
 ```bash
 # 1. Clone repo and create feature branch
-git clone https://github.com/TheDataEngineX/dex.git
+git clone https://github.com/TheDataEngineX/dataenginex.git
 cd dex
 git checkout -b feat/issue-XXX-description dev
 
@@ -208,5 +208,5 @@ uv run poe clean              # Remove caches and build artifacts
 - **Architecture**: See [architecture.md](./architecture.md)
 - **ADRs**: See [ADR-0001](./adr/0001-medallion-architecture.md) for architectural decisions
 - **Deployment**: See Deployment Runbook in the `infradex` repo
-- **Issues**: [GitHub Issues](https://github.com/TheDataEngineX/dex/issues)
+- **Issues**: [GitHub Issues](https://github.com/TheDataEngineX/dataenginex/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/orgs/TheDataEngineX/discussions)

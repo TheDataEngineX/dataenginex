@@ -11,6 +11,7 @@ connector_registry: BackendRegistry[BaseConnector] = BackendRegistry("connector"
 # Auto-register built-in connector backends
 from dataenginex.data.connectors.csv import CsvConnector  # noqa: E402, F401
 from dataenginex.data.connectors.dbt import DbtConnector  # noqa: E402, F401
+from dataenginex.data.connectors.delta import DeltaConnector  # noqa: E402, F401
 from dataenginex.data.connectors.duckdb import DuckDBConnector  # noqa: E402, F401
 
 # Re-export legacy connector classes for backward compatibility

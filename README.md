@@ -1,6 +1,6 @@
 # dataenginex
 
-[![CI](https://github.com/TheDataEngineX/DEX/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/TheDataEngineX/DEX/actions/workflows/ci.yml)
+[![CI](https://github.com/TheDataEngineX/dataenginex/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/TheDataEngineX/dataenginex/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/dataenginex)](https://pypi.org/project/dataenginex/)
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -96,7 +96,7 @@ ______________________________________________________________________
 ## Development
 
 ```bash
-git clone https://github.com/TheDataEngineX/dex && cd dex
+git clone https://github.com/TheDataEngineX/dataenginex && cd dataenginex
 uv sync
 uv run poe check-all          # lint + typecheck + tests
 uv run poe test-cov           # tests + coverage
@@ -126,7 +126,7 @@ ______________________________________________________________________
 
 | Repo | Purpose |
 | --- | --- |
-| [dataenginex](https://github.com/TheDataEngineX/dex) | This library (PyPI) |
+| [dataenginex](https://github.com/TheDataEngineX/dataenginex) | This library (PyPI) |
 | [dex-studio](https://github.com/TheDataEngineX/dex-studio) | Web UI — FastAPI + Jinja2 + HTMX |
 | [docs](https://github.com/TheDataEngineX/docs) | Docs site ([docs.thedataenginex.org](https://docs.thedataenginex.org)) — ADRs + roadmap live here |
 

@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import io
-import json
 import os
 import pickle
 import time
@@ -23,9 +22,12 @@ from typing import Any
 
 import structlog
 
+from dataenginex import _json
+
 logger = structlog.get_logger()
 __all__ = [
     "BaseTrainer",
+    "PyTorchTrainer",
     "SklearnTrainer",
     "TrainingResult",
 ]
@@ -311,7 +313,7 @@ class SklearnTrainer(BaseTrainer):
         # Save metadata alongside
         meta = out.with_suffix(".json")
         meta.write_text(
-            json.dumps(
+            _json.dumps(
                 {
                     "model_name": self.model_name,
                     "version": self.version,
@@ -363,6 +365,238 @@ class SklearnTrainer(BaseTrainer):
         ).load()
         self._is_fitted = True
         logger.info("model loaded", name=self.model_name, path=str(path))
+
+
+class PyTorchTrainer(BaseTrainer):
+    """PyTorch model trainer.
+
+    Works with any ``torch.nn.Module`` that accepts a single float tensor input
+    and returns a single float tensor output.  All ``torch`` imports are
+    deferred so the class can be imported without PyTorch installed.
+
+    Parameters
+    ----------
+    model_name:
+        Name used in model registry.
+    version:
+        Semantic version string.
+    model:
+        A ``torch.nn.Module`` instance.
+    optimizer_cls:
+        Optimizer class (default: ``torch.optim.Adam``).
+    criterion:
+        Loss function instance (default: ``torch.nn.MSELoss()``).
+    lr:
+        Learning rate (default: ``1e-3``).
+    epochs:
+        Training epochs (default: ``10``).
+    batch_size:
+        Mini-batch size (default: ``32``).
+    device:
+        Torch device string — ``"cpu"`` or ``"cuda"`` (default: ``"cpu"``).
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        version: str = "1.0.0",
+        model: Any = None,
+        optimizer_cls: Any = None,
+        criterion: Any = None,
+        lr: float = 1e-3,
+        epochs: int = 10,
+        batch_size: int = 32,
+        device: str = "cpu",
+    ) -> None:
+        super().__init__(model_name, version)
+        self.model = model
+        self.optimizer_cls = optimizer_cls
+        self.criterion = criterion
+        self.lr = lr
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.device = device
+        self._is_fitted = False
+        self._optimizer: Any = None
+
+    def _to_tensor(self, data: Any, dtype: Any) -> Any:
+        import torch  # type: ignore[import-not-found]
+
+        if isinstance(data, torch.Tensor):
+            return data.to(dtype=dtype, device=self.device)
+        return torch.tensor(data, dtype=dtype, device=self.device)
+
+    def train(
+        self,
+        X_train: Any,
+        y_train: Any,
+        **params: Any,  # noqa: N803
+    ) -> TrainingResult:
+        """Train *model* on *X_train*/*y_train* and return metrics."""
+        import torch  # type: ignore[import-not-found]
+
+        if self.model is None:
+            raise RuntimeError("No model provided to PyTorchTrainer")
+
+        epochs = int(params.get("epochs", self.epochs))
+        batch_size = int(params.get("batch_size", self.batch_size))
+        lr = float(params.get("lr", self.lr))
+
+        criterion = self.criterion if self.criterion is not None else torch.nn.MSELoss()
+        optimizer_cls = self.optimizer_cls or torch.optim.Adam
+        self._optimizer = optimizer_cls(self.model.parameters(), lr=lr)
+
+        self.model.to(self.device)
+        self.model.train()
+
+        X = self._to_tensor(X_train, torch.float32)
+        y = self._to_tensor(y_train, torch.float32)
+        n = X.shape[0]
+
+        start = time.perf_counter()
+        last_loss = float("inf")
+        for _ in range(epochs):
+            perm = torch.randperm(n, device=self.device)
+            epoch_loss = 0.0
+            steps = 0
+            for i in range(0, n, batch_size):
+                idx = perm[i : i + batch_size]
+                xb, yb = X[idx], y[idx]
+                self._optimizer.zero_grad()
+                out = self.model(xb)
+                loss = criterion(out.squeeze(-1), yb)
+                loss.backward()
+                self._optimizer.step()
+                epoch_loss += float(loss.item())
+                steps += 1
+            last_loss = epoch_loss / max(steps, 1)
+        duration = time.perf_counter() - start
+
+        self._is_fitted = True
+        metrics = {"train_loss": round(last_loss, 6)}
+        logger.info(
+            "PyTorchTrainer: trained %s v%s in %.2fs (train_loss=%.6f)",
+            self.model_name,
+            self.version,
+            duration,
+            last_loss,
+        )
+        return TrainingResult(
+            model_name=self.model_name,
+            version=self.version,
+            metrics=metrics,
+            parameters={"epochs": epochs, "batch_size": batch_size, "lr": lr},
+            duration_seconds=duration,
+        )
+
+    def evaluate(self, X_test: Any, y_test: Any) -> dict[str, float]:  # noqa: N803
+        """Compute test loss (and accuracy when output is multi-class) on *X_test*/*y_test*."""
+        import torch  # type: ignore[import-not-found]
+
+        if not self._is_fitted:
+            raise RuntimeError("Model not yet trained")
+
+        criterion = self.criterion if self.criterion is not None else torch.nn.MSELoss()
+        X = self._to_tensor(X_test, torch.float32)
+        y = self._to_tensor(y_test, torch.float32)
+
+        self.model.eval()
+        with torch.no_grad():
+            out = self.model(X)
+            loss = criterion(out.squeeze(-1), y)
+
+        metrics: dict[str, float] = {"test_loss": round(float(loss.item()), 6)}
+
+        # Accuracy — only meaningful for multi-class output (ndim > 1, classes > 1)
+        if out.ndim > 1 and out.shape[-1] > 1:
+            preds = out.argmax(dim=-1)
+            y_long = self._to_tensor(y_test, torch.long)
+            acc = float((preds == y_long).float().mean().item())
+            metrics["accuracy"] = round(acc, 4)
+
+        return metrics
+
+    def predict(self, X: Any) -> Any:  # noqa: N803
+        """Return model output for *X* as a numpy array."""
+        import torch  # type: ignore[import-not-found]
+
+        if not self._is_fitted:
+            raise RuntimeError("Model not yet trained")
+
+        self.model.eval()
+        with torch.no_grad():
+            out = self.model(self._to_tensor(X, torch.float32))
+        return out.cpu().detach().numpy()
+
+    def save(self, path: str) -> str:
+        """Save ``model.state_dict()`` with an HMAC sidecar and metadata JSON."""
+        import torch  # type: ignore[import-not-found]
+
+        if not self._is_fitted:
+            raise RuntimeError("Model not yet trained")
+
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+
+        buf = io.BytesIO()
+        torch.save(self.model.state_dict(), buf)
+        model_bytes = buf.getvalue()
+        out.write_bytes(model_bytes)
+
+        out.with_suffix(".sig").write_text(_hmac_sign(model_bytes))
+        out.with_suffix(".json").write_text(
+            _json.dumps(
+                {
+                    "model_name": self.model_name,
+                    "version": self.version,
+                    "saved_at": datetime.now(tz=UTC).isoformat(),
+                }
+            )
+        )
+
+        logger.info("pytorch model saved", name=self.model_name, path=str(out))
+        return str(out)
+
+    def load(
+        self,
+        path: str,
+        *,
+        extra_modules: frozenset[str] | None = None,
+    ) -> None:
+        """Load ``state_dict`` from *path* with HMAC verification.
+
+        The model architecture (``self.model``) must already be set; only
+        weights are restored.  *extra_modules* is accepted for interface
+        compatibility but unused — PyTorch uses ``weights_only=True`` instead.
+        """
+        import torch  # type: ignore[import-not-found]
+
+        del extra_modules  # unused — safety handled by weights_only=True
+
+        if self.model is None:
+            raise RuntimeError("model architecture must be set on PyTorchTrainer before load()")
+
+        artifact = Path(path)
+        data = artifact.read_bytes()
+
+        sig_path = artifact.with_suffix(".sig")
+        if sig_path.exists():
+            expected = sig_path.read_text().strip()
+            if not _hmac_verify(data, expected):
+                msg = (
+                    f"HMAC verification failed for {path}. "
+                    "The model file may have been tampered with."
+                )
+                raise ValueError(msg)
+        else:
+            logger.warning("No .sig sidecar for %s — skipping HMAC check", path)
+
+        state = torch.load(io.BytesIO(data), weights_only=True)
+        self.model.load_state_dict(state)
+        self.model.to(self.device)
+        self.model.eval()
+        self._is_fitted = True
+        logger.info("pytorch model loaded", name=self.model_name, path=str(path))
 
 
 def train_experiment(config: Any, experiment_name: str) -> dict[str, Any]:

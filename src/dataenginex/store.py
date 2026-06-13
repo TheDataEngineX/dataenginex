@@ -1,9 +1,14 @@
-"""DexStore — single DuckDB-backed persistence layer for all project state.
+"""DexStore — SQLite-backed persistence layer for all project state.
 
-Replaces scattered JSON files (.dex/pipeline_runs.json, lineage.json, etc.)
-with one database at .dex/store.duckdb.
+Replaces DuckDB with SQLite (WAL mode) for metadata storage.
 
-Domain tables:
+Why SQLite instead of DuckDB for metadata:
+- WAL mode: N concurrent readers + 1 writer with retry instead of SQLITE_BUSY crash
+- threading.local: each thread gets its own connection — no shared-state races
+- Multi-process: CLI + dex-studio web server can coexist without a file lock error
+- DuckDB's file lock blocks a second process entirely; SQLite WAL does not
+
+Domain tables (unchanged interface from DuckDB version):
   pipeline_runs   — execution history
   lineage_events  — data lineage graph
   model_artifacts — ML model registry
@@ -16,7 +21,8 @@ Domain tables:
 
 from __future__ import annotations
 
-import json
+import contextlib
+import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -24,16 +30,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import duckdb
 import structlog
+
+from dataenginex import _json
 
 logger = structlog.get_logger()
 
 __all__ = ["DexStore"]
 
-
 # ---------------------------------------------------------------------------
-# Lightweight data records (duplicated intentionally to avoid circular imports)
+# Lightweight data records
 # ---------------------------------------------------------------------------
 
 
@@ -130,7 +136,7 @@ class ModelArtifact:
 
 
 # ---------------------------------------------------------------------------
-# Schema DDL
+# Schema DDL (SQLite dialect — REAL instead of DOUBLE, INTEGER for booleans)
 # ---------------------------------------------------------------------------
 
 _SCHEMA = """
@@ -138,11 +144,11 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     run_id          TEXT PRIMARY KEY,
     pipeline_name   TEXT NOT NULL,
     timestamp       TEXT NOT NULL,
-    success         BOOLEAN NOT NULL DEFAULT FALSE,
+    success         INTEGER NOT NULL DEFAULT 0,
     rows_input      INTEGER NOT NULL DEFAULT 0,
     rows_output     INTEGER NOT NULL DEFAULT 0,
     steps_completed INTEGER NOT NULL DEFAULT 0,
-    duration_ms     DOUBLE  NOT NULL DEFAULT 0,
+    duration_ms     REAL    NOT NULL DEFAULT 0,
     error           TEXT
 );
 
@@ -156,7 +162,7 @@ CREATE TABLE IF NOT EXISTS lineage_events (
     input_count   INTEGER NOT NULL DEFAULT 0,
     output_count  INTEGER NOT NULL DEFAULT 0,
     error_count   INTEGER NOT NULL DEFAULT 0,
-    quality_score DOUBLE,
+    quality_score REAL,
     pipeline_name TEXT NOT NULL DEFAULT '',
     step_name     TEXT NOT NULL DEFAULT '',
     metadata      TEXT NOT NULL DEFAULT '{}',
@@ -201,15 +207,15 @@ CREATE TABLE IF NOT EXISTS ai_memory (
     content   TEXT NOT NULL,
     role      TEXT NOT NULL DEFAULT 'user',
     metadata  TEXT NOT NULL DEFAULT '{}',
-    timestamp DOUBLE NOT NULL DEFAULT 0
+    timestamp REAL NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS ai_episodes (
     task      TEXT NOT NULL,
     steps     TEXT NOT NULL DEFAULT '[]',
     outcome   TEXT NOT NULL DEFAULT '',
-    reward    DOUBLE NOT NULL DEFAULT 0,
-    timestamp DOUBLE NOT NULL DEFAULT 0
+    reward    REAL NOT NULL DEFAULT 0,
+    timestamp REAL NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS catalog_entries (
@@ -236,31 +242,69 @@ CREATE TABLE IF NOT EXISTS catalog_entries (
 
 
 class DexStore:
-    """Single DuckDB-backed store for all project state.
+    """SQLite-backed store for all project metadata.
 
-    Opens (or creates) ``db_path`` on construction and initialises all
-    domain tables.  Thread-safe: a ``threading.Lock`` serialises writes.
+    Thread-safe: per-thread connections via threading.local (file mode) or a
+    single shared connection with a Lock (in-memory mode).
+    Multi-process-safe: WAL journal mode serialises writes without blocking reads.
 
     Args:
-        db_path: Path to the DuckDB file (e.g. ``.dex/store.duckdb``).
+        db_path: Path to the SQLite file.  Use ``Path(":memory:")`` for tests.
     """
 
     def __init__(self, db_path: Path) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
-        self._con = duckdb.connect(str(db_path))
+        self._in_memory = str(db_path) == ":memory:"
         self._lock = threading.Lock()
-        for _stmt in _SCHEMA.split(";"):
-            _stmt = _stmt.strip()
-            if _stmt:
-                self._con.execute(_stmt)
-        logger.info("DexStore ready", path=str(db_path))
 
-    # -- public connection (for ad-hoc DuckDB queries in DexEngine) ----------
+        if self._in_memory:
+            # Single shared connection — all threads share one in-memory DB
+            self._mem_conn = sqlite3.connect(":memory:", check_same_thread=False)
+            self._init_schema(self._mem_conn)
+        else:
+            self._tls: threading.local = threading.local()
+            self._init_schema(self._get_conn())
 
-    @property
-    def connection(self) -> duckdb.DuckDBPyConnection:
-        return self._con
+        logger.info(
+            "DexStore ready",
+            path=str(db_path),
+            mode="memory" if self._in_memory else "file",
+        )
+
+    def _get_conn(self) -> sqlite3.Connection:
+        """Return the per-thread SQLite connection, creating it on first use."""
+        if self._in_memory:
+            return self._mem_conn
+        if not hasattr(self._tls, "conn") or self._tls.conn is None:
+            # timeout=10: retry for up to 10 s before raising OperationalError
+            conn = sqlite3.connect(str(self._db_path), timeout=10.0, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")  # safe with WAL, faster than FULL
+            conn.execute("PRAGMA foreign_keys=ON")
+            self._tls.conn = conn
+        return self._tls.conn  # type: ignore[no-any-return]
+
+    def _init_schema(self, conn: sqlite3.Connection) -> None:
+        with conn:
+            for stmt in _SCHEMA.split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    conn.execute(stmt)
+
+    def _execute(self, sql: str, params: list[Any] | None = None) -> sqlite3.Cursor:
+        return self._get_conn().execute(sql, params or [])
+
+    def _write(self, sql: str, params: list[Any] | None = None) -> None:
+        """Execute a single write inside a transaction, serialised by _lock."""
+        with self._lock, self._get_conn() as conn:
+            conn.execute(sql, params or [])
+
+    def _write_many(self, ops: list[tuple[str, list[Any]]]) -> None:
+        """Execute multiple writes in a single atomic transaction."""
+        with self._lock, self._get_conn() as conn:
+            for sql, params in ops:
+                conn.execute(sql, params)
 
     # =========================================================================
     # Pipeline runs
@@ -285,41 +329,38 @@ class DexStore:
             duration_ms=round(duration_ms, 2),
             error=error,
         )
-        with self._lock:
-            self._con.execute(
-                """INSERT INTO pipeline_runs
-                   (run_id, pipeline_name, timestamp, success,
-                    rows_input, rows_output, steps_completed, duration_ms, error)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                [
-                    rec.run_id,
-                    rec.pipeline_name,
-                    rec.timestamp,
-                    rec.success,
-                    rec.rows_input,
-                    rec.rows_output,
-                    rec.steps_completed,
-                    rec.duration_ms,
-                    rec.error,
-                ],
-            )
+        self._write(
+            """INSERT INTO pipeline_runs
+               (run_id, pipeline_name, timestamp, success,
+                rows_input, rows_output, steps_completed, duration_ms, error)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            [
+                rec.run_id,
+                rec.pipeline_name,
+                rec.timestamp,
+                1 if rec.success else 0,
+                rec.rows_input,
+                rec.rows_output,
+                rec.steps_completed,
+                rec.duration_ms,
+                rec.error,
+            ],
+        )
         logger.info("pipeline run recorded", pipeline=pipeline_name, success=success)
         return rec
 
     def get_pipeline_runs(self, pipeline_name: str | None = None) -> list[PipelineRunRecord]:
         if pipeline_name:
-            rows = self._con.execute(
+            rows = self._execute(
                 "SELECT * FROM pipeline_runs WHERE pipeline_name=? ORDER BY timestamp DESC",
                 [pipeline_name],
             ).fetchall()
         else:
-            rows = self._con.execute(
-                "SELECT * FROM pipeline_runs ORDER BY timestamp DESC"
-            ).fetchall()
+            rows = self._execute("SELECT * FROM pipeline_runs ORDER BY timestamp DESC").fetchall()
         return [self._row_to_run(r) for r in rows]
 
     def get_last_pipeline_run(self, pipeline_name: str) -> PipelineRunRecord | None:
-        row = self._con.execute(
+        row = self._execute(
             "SELECT * FROM pipeline_runs WHERE pipeline_name=? ORDER BY timestamp DESC LIMIT 1",
             [pipeline_name],
         ).fetchone()
@@ -340,61 +381,57 @@ class DexStore:
         )
 
     # =========================================================================
-    # Lineage events — implements the PersistentLineage.record() interface
-    # so DexStore can be passed directly as the lineage object to PipelineRunner
+    # Lineage events — satisfies LineageBackend duck-typing for PipelineRunner
     # =========================================================================
 
     def record(self, **kwargs: Any) -> LineageEvent:
-        """Create and persist a lineage event (matches PersistentLineage.record)."""
+        """Create and persist a lineage event."""
         event = LineageEvent(**kwargs)
-        with self._lock:
-            self._con.execute(
-                """INSERT INTO lineage_events
-                   (event_id, parent_id, operation, layer, source, destination,
-                    input_count, output_count, error_count, quality_score,
-                    pipeline_name, step_name, metadata, timestamp)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                [
-                    event.event_id,
-                    event.parent_id,
-                    event.operation,
-                    event.layer,
-                    event.source,
-                    event.destination,
-                    event.input_count,
-                    event.output_count,
-                    event.error_count,
-                    event.quality_score,
-                    event.pipeline_name,
-                    event.step_name,
-                    json.dumps(event.metadata),
-                    event.timestamp.isoformat(),
-                ],
-            )
+        self._write(
+            """INSERT INTO lineage_events
+               (event_id, parent_id, operation, layer, source, destination,
+                input_count, output_count, error_count, quality_score,
+                pipeline_name, step_name, metadata, timestamp)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            [
+                event.event_id,
+                event.parent_id,
+                event.operation,
+                event.layer,
+                event.source,
+                event.destination,
+                event.input_count,
+                event.output_count,
+                event.error_count,
+                event.quality_score,
+                event.pipeline_name,
+                event.step_name,
+                _json.dumps(event.metadata),
+                event.timestamp.isoformat(),
+            ],
+        )
         return event
 
     def get_lineage_event(self, event_id: str) -> LineageEvent | None:
-        row = self._con.execute(
-            "SELECT * FROM lineage_events WHERE event_id=?", [event_id]
-        ).fetchone()
+        row = self._execute("SELECT * FROM lineage_events WHERE event_id=?", [event_id]).fetchone()
         return self._row_to_lineage(row) if row else None
 
     def get_lineage_children(self, parent_id: str) -> list[LineageEvent]:
-        rows = self._con.execute(
+        rows = self._execute(
             "SELECT * FROM lineage_events WHERE parent_id=? ORDER BY timestamp",
             [parent_id],
         ).fetchall()
         return [self._row_to_lineage(r) for r in rows]
 
     def get_lineage_by_pipeline(self, pipeline_name: str) -> list[LineageEvent]:
-        rows = self._con.execute(
+        rows = self._execute(
             "SELECT * FROM lineage_events WHERE pipeline_name=? ORDER BY timestamp DESC",
             [pipeline_name],
         ).fetchall()
         return [self._row_to_lineage(r) for r in rows]
 
     def get_lineage_by_layer(self, layer: str) -> list[LineageEvent]:
-        rows = self._con.execute(
+        rows = self._execute(
             "SELECT * FROM lineage_events WHERE layer=? ORDER BY timestamp DESC",
             [layer],
         ).fetchall()
@@ -402,18 +439,18 @@ class DexStore:
 
     @property
     def all_events(self) -> list[LineageEvent]:
-        rows = self._con.execute(
+        rows = self._execute(
             "SELECT * FROM lineage_events ORDER BY timestamp DESC LIMIT 1000"
         ).fetchall()
         return [self._row_to_lineage(r) for r in rows]
 
     def lineage_summary(self) -> dict[str, Any]:
-        _row = self._con.execute("SELECT COUNT(*) FROM lineage_events").fetchone()
+        _row = self._execute("SELECT COUNT(*) FROM lineage_events").fetchone()
         total = _row[0] if _row else 0
-        layer_rows = self._con.execute(
+        layer_rows = self._execute(
             "SELECT layer, COUNT(*) FROM lineage_events GROUP BY layer"
         ).fetchall()
-        op_rows = self._con.execute(
+        op_rows = self._execute(
             "SELECT operation, COUNT(*) FROM lineage_events GROUP BY operation"
         ).fetchall()
         return {
@@ -424,7 +461,7 @@ class DexStore:
 
     @staticmethod
     def _row_to_lineage(row: tuple[Any, ...]) -> LineageEvent:
-        meta: dict[str, Any] = json.loads(row[12]) if row[12] else {}
+        meta: dict[str, Any] = _json.loads(row[12]) if row[12] else {}
         return LineageEvent(
             event_id=row[0],
             parent_id=row[1],
@@ -447,77 +484,79 @@ class DexStore:
     # =========================================================================
 
     def register_model(self, artifact: ModelArtifact) -> ModelArtifact:
-        with self._lock:
-            existing = self.get_model(artifact.name, artifact.version)
-            if existing:
-                msg = f"Model {artifact.name!r} v{artifact.version} already registered"
-                raise ValueError(msg)
-            self._con.execute(
-                """INSERT INTO model_artifacts
-                   (name, version, stage, artifact_path, metrics, parameters,
-                    description, tags, created_at, promoted_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                [
-                    artifact.name,
-                    artifact.version,
-                    artifact.stage,
-                    artifact.artifact_path,
-                    json.dumps(artifact.metrics),
-                    json.dumps(artifact.parameters),
-                    artifact.description,
-                    json.dumps(artifact.tags),
-                    artifact.created_at.isoformat(),
-                    artifact.promoted_at.isoformat() if artifact.promoted_at else None,
-                ],
-            )
+        existing = self.get_model(artifact.name, artifact.version)
+        if existing:
+            msg = f"Model {artifact.name!r} v{artifact.version} already registered"
+            raise ValueError(msg)
+        self._write(
+            """INSERT INTO model_artifacts
+               (name, version, stage, artifact_path, metrics, parameters,
+                description, tags, created_at, promoted_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            [
+                artifact.name,
+                artifact.version,
+                artifact.stage,
+                artifact.artifact_path,
+                _json.dumps(artifact.metrics),
+                _json.dumps(artifact.parameters),
+                artifact.description,
+                _json.dumps(artifact.tags),
+                artifact.created_at.isoformat(),
+                artifact.promoted_at.isoformat() if artifact.promoted_at else None,
+            ],
+        )
         logger.info("model registered", name=artifact.name, version=artifact.version)
         return artifact
 
     def get_model(self, name: str, version: str) -> ModelArtifact | None:
-        row = self._con.execute(
+        row = self._execute(
             "SELECT * FROM model_artifacts WHERE name=? AND version=?", [name, version]
         ).fetchone()
         return self._row_to_model(row) if row else None
 
     def get_latest_model(self, name: str) -> ModelArtifact | None:
-        row = self._con.execute(
+        row = self._execute(
             "SELECT * FROM model_artifacts WHERE name=? ORDER BY created_at DESC LIMIT 1",
             [name],
         ).fetchone()
         return self._row_to_model(row) if row else None
 
     def get_production_model(self, name: str) -> ModelArtifact | None:
-        row = self._con.execute(
+        row = self._execute(
             "SELECT * FROM model_artifacts WHERE name=? AND stage='production' LIMIT 1",
             [name],
         ).fetchone()
         return self._row_to_model(row) if row else None
 
     def list_model_names(self) -> list[str]:
-        rows = self._con.execute(
-            "SELECT DISTINCT name FROM model_artifacts ORDER BY name"
-        ).fetchall()
+        rows = self._execute("SELECT DISTINCT name FROM model_artifacts ORDER BY name").fetchall()
         return [r[0] for r in rows]
 
     def list_model_versions(self, name: str) -> list[str]:
-        rows = self._con.execute(
+        rows = self._execute(
             "SELECT version FROM model_artifacts WHERE name=? ORDER BY created_at",
             [name],
         ).fetchall()
         return [r[0] for r in rows]
 
     def promote_model(self, name: str, version: str, stage: str) -> ModelArtifact:
-        with self._lock:
-            if stage == "production":
-                self._con.execute(
+        ops: list[tuple[str, list[Any]]] = []
+        if stage == "production":
+            ops.append(
+                (
                     "UPDATE model_artifacts SET stage='archived'"
                     " WHERE name=? AND stage='production'",
                     [name],
                 )
-            self._con.execute(
+            )
+        ops.append(
+            (
                 "UPDATE model_artifacts SET stage=?, promoted_at=? WHERE name=? AND version=?",
                 [stage, datetime.now(tz=UTC).isoformat(), name, version],
             )
+        )
+        self._write_many(ops)
         artifact = self.get_model(name, version)
         if artifact is None:
             msg = f"Model {name!r} v{version} not found"
@@ -525,13 +564,10 @@ class DexStore:
         return artifact
 
     def delete_model(self, name: str, version: str | None = None) -> None:
-        with self._lock:
-            if version:
-                self._con.execute(
-                    "DELETE FROM model_artifacts WHERE name=? AND version=?", [name, version]
-                )
-            else:
-                self._con.execute("DELETE FROM model_artifacts WHERE name=?", [name])
+        if version:
+            self._write("DELETE FROM model_artifacts WHERE name=? AND version=?", [name, version])
+        else:
+            self._write("DELETE FROM model_artifacts WHERE name=?", [name])
 
     @staticmethod
     def _row_to_model(row: tuple[Any, ...]) -> ModelArtifact:
@@ -540,10 +576,10 @@ class DexStore:
             version=row[1],
             stage=row[2],
             artifact_path=row[3],
-            metrics=json.loads(row[4]),
-            parameters=json.loads(row[5]),
+            metrics=_json.loads(row[4]),
+            parameters=_json.loads(row[5]),
             description=row[6],
-            tags=json.loads(row[7]),
+            tags=_json.loads(row[7]),
             created_at=datetime.fromisoformat(row[8]) if row[8] else datetime.now(tz=UTC),
             promoted_at=datetime.fromisoformat(row[9]) if row[9] else None,
         )
@@ -555,23 +591,27 @@ class DexStore:
     def record_quality_run(self, results: dict[str, Any]) -> str:
         run_id = uuid.uuid4().hex[:8]
         timestamp = datetime.now(tz=UTC).isoformat()
-        with self._lock:
-            self._con.execute(
-                "INSERT INTO quality_runs (run_id, timestamp, results) VALUES (?,?,?)",
-                [run_id, timestamp, json.dumps(results)],
-            )
-            self._con.execute(
-                """DELETE FROM quality_runs WHERE run_id NOT IN (
-                   SELECT run_id FROM quality_runs ORDER BY timestamp DESC LIMIT 50)"""
-            )
+        self._write_many(
+            [
+                (
+                    "INSERT INTO quality_runs (run_id, timestamp, results) VALUES (?,?,?)",
+                    [run_id, timestamp, _json.dumps(results)],
+                ),
+                (
+                    """DELETE FROM quality_runs WHERE run_id NOT IN (
+                   SELECT run_id FROM quality_runs ORDER BY timestamp DESC LIMIT 50)""",
+                    [],
+                ),
+            ]
+        )
         return run_id
 
     def get_quality_history(self, limit: int = 50) -> dict[str, Any]:
-        rows = self._con.execute(
+        rows = self._execute(
             "SELECT run_id, timestamp, results FROM quality_runs ORDER BY timestamp DESC LIMIT ?",
             [limit],
         ).fetchall()
-        runs = [{"run_id": r[0], "timestamp": r[1], "results": json.loads(r[2])} for r in rows]
+        runs = [{"run_id": r[0], "timestamp": r[1], "results": _json.loads(r[2])} for r in rows]
         return {"runs": runs}
 
     # =========================================================================
@@ -597,24 +637,23 @@ class DexStore:
             details=details or {},
             ip_address=ip_address,
         )
-        with self._lock:
-            self._con.execute(
-                """INSERT INTO audit_log
-                   (event_id, timestamp, actor, action, resource, resource_type,
-                    status, details, ip_address)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                [
-                    event.event_id,
-                    event.timestamp,
-                    event.actor,
-                    event.action,
-                    event.resource,
-                    event.resource_type,
-                    event.status,
-                    json.dumps(event.details),
-                    event.ip_address,
-                ],
-            )
+        self._write(
+            """INSERT INTO audit_log
+               (event_id, timestamp, actor, action, resource, resource_type,
+                status, details, ip_address)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            [
+                event.event_id,
+                event.timestamp,
+                event.actor,
+                event.action,
+                event.resource,
+                event.resource_type,
+                event.status,
+                _json.dumps(event.details),
+                event.ip_address,
+            ],
+        )
         return event
 
     def get_audit_events(
@@ -640,7 +679,7 @@ class DexStore:
             sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
-        rows = self._con.execute(sql, params).fetchall()
+        rows = self._execute(sql, params).fetchall()
         return [self._row_to_audit(r) for r in rows]
 
     @staticmethod
@@ -653,29 +692,28 @@ class DexStore:
             resource=row[4],
             resource_type=row[5],
             status=row[6],
-            details=json.loads(row[7]),
+            details=_json.loads(row[7]),
             ip_address=row[8],
         )
 
     # =========================================================================
-    # AI memory (long-term)
+    # AI memory
     # =========================================================================
 
     def save_memory(self, entry: MemoryEntry) -> None:
-        with self._lock:
-            self._con.execute(
-                "INSERT INTO ai_memory (content, role, metadata, timestamp) VALUES (?,?,?,?)",
-                [entry.content, entry.role, json.dumps(entry.metadata), entry.timestamp],
-            )
+        self._write(
+            "INSERT INTO ai_memory (content, role, metadata, timestamp) VALUES (?,?,?,?)",
+            [entry.content, entry.role, _json.dumps(entry.metadata), entry.timestamp],
+        )
 
     def get_recent_memory(self, n: int = 100) -> list[MemoryEntry]:
-        rows = self._con.execute(
+        rows = self._execute(
             "SELECT content, role, metadata, timestamp"
             " FROM ai_memory ORDER BY timestamp DESC LIMIT ?",
             [n],
         ).fetchall()
         return [
-            MemoryEntry(content=r[0], role=r[1], metadata=json.loads(r[2]), timestamp=r[3])
+            MemoryEntry(content=r[0], role=r[1], metadata=_json.loads(r[2]), timestamp=r[3])
             for r in rows
         ]
 
@@ -694,26 +732,30 @@ class DexStore:
     # =========================================================================
 
     def add_episode(self, episode: Episode) -> None:
-        with self._lock:
-            self._con.execute(
-                "INSERT INTO ai_episodes"
-                " (task, steps, outcome, reward, timestamp) VALUES (?,?,?,?,?)",
-                [
-                    episode.task,
-                    json.dumps(episode.steps),
-                    episode.outcome,
-                    episode.reward,
-                    episode.timestamp,
-                ],
-            )
+        self._write(
+            "INSERT INTO ai_episodes (task, steps, outcome, reward, timestamp) VALUES (?,?,?,?,?)",
+            [
+                episode.task,
+                _json.dumps(episode.steps),
+                episode.outcome,
+                episode.reward,
+                episode.timestamp,
+            ],
+        )
 
     def recall_episodes(self, task: str, top_k: int = 5) -> list[Episode]:
-        rows = self._con.execute(
+        rows = self._execute(
             "SELECT task, steps, outcome, reward, timestamp"
             " FROM ai_episodes ORDER BY timestamp DESC LIMIT 500"
         ).fetchall()
         episodes = [
-            Episode(task=r[0], steps=json.loads(r[1]), outcome=r[2], reward=r[3], timestamp=r[4])
+            Episode(
+                task=r[0],
+                steps=_json.loads(r[1]),
+                outcome=r[2],
+                reward=r[3],
+                timestamp=r[4],
+            )
             for r in rows
         ]
         task_lower = task.lower()
@@ -732,33 +774,32 @@ class DexStore:
             entry.version = existing.version + 1
             entry.created_at = existing.created_at
         entry.updated_at = datetime.now(tz=UTC)
-        with self._lock:
-            self._con.execute(
-                """INSERT OR REPLACE INTO catalog_entries
-                   (name, layer, format, location, record_count, schema_fields,
-                    description, owner, tags, created_at, updated_at, metadata, version)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                [
-                    entry.name,
-                    entry.layer,
-                    entry.format,
-                    entry.location,
-                    entry.record_count,
-                    json.dumps(entry.schema_fields),
-                    entry.description,
-                    entry.owner,
-                    json.dumps(entry.tags),
-                    entry.created_at.isoformat(),
-                    entry.updated_at.isoformat(),
-                    json.dumps(entry.metadata),
-                    entry.version,
-                ],
-            )
+        self._write(
+            """INSERT OR REPLACE INTO catalog_entries
+               (name, layer, format, location, record_count, schema_fields,
+                description, owner, tags, created_at, updated_at, metadata, version)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            [
+                entry.name,
+                entry.layer,
+                entry.format,
+                entry.location,
+                entry.record_count,
+                _json.dumps(entry.schema_fields),
+                entry.description,
+                entry.owner,
+                _json.dumps(entry.tags),
+                entry.created_at.isoformat(),
+                entry.updated_at.isoformat(),
+                _json.dumps(entry.metadata),
+                entry.version,
+            ],
+        )
         logger.info("catalog entry registered", name=entry.name, layer=entry.layer)
         return entry
 
     def get_catalog(self, name: str) -> CatalogEntry | None:
-        row = self._con.execute("SELECT * FROM catalog_entries WHERE name=?", [name]).fetchone()
+        row = self._execute("SELECT * FROM catalog_entries WHERE name=?", [name]).fetchone()
         return self._row_to_catalog(row) if row else None
 
     def search_catalog(
@@ -778,13 +819,11 @@ class DexStore:
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)
         sql += " ORDER BY updated_at DESC"
-        rows = self._con.execute(sql, params).fetchall()
+        rows = self._execute(sql, params).fetchall()
         return [self._row_to_catalog(r) for r in rows]
 
     def all_catalog(self) -> list[CatalogEntry]:
-        rows = self._con.execute(
-            "SELECT * FROM catalog_entries ORDER BY updated_at DESC"
-        ).fetchall()
+        rows = self._execute("SELECT * FROM catalog_entries ORDER BY updated_at DESC").fetchall()
         return [self._row_to_catalog(r) for r in rows]
 
     @staticmethod
@@ -795,13 +834,13 @@ class DexStore:
             format=row[2],
             location=row[3],
             record_count=row[4],
-            schema_fields=json.loads(row[5]),
+            schema_fields=_json.loads(row[5]),
             description=row[6],
             owner=row[7],
-            tags=json.loads(row[8]),
+            tags=_json.loads(row[8]),
             created_at=datetime.fromisoformat(row[9]) if row[9] else datetime.now(tz=UTC),
             updated_at=datetime.fromisoformat(row[10]) if row[10] else datetime.now(tz=UTC),
-            metadata=json.loads(row[11]),
+            metadata=_json.loads(row[11]),
             version=row[12],
         )
 
@@ -810,5 +849,13 @@ class DexStore:
     # =========================================================================
 
     def close(self) -> None:
-        self._con.close()
+        if self._in_memory:
+            self._mem_conn.close()
+        elif hasattr(self._tls, "conn") and self._tls.conn is not None:
+            self._tls.conn.close()
+            self._tls.conn = None
         logger.info("DexStore closed", path=str(self._db_path))
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self.close()

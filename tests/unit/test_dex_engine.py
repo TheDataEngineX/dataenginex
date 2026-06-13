@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
 from textwrap import dedent
 
@@ -40,8 +41,10 @@ def dex_yaml(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
-def engine(dex_yaml: Path) -> DexEngine:
-    return DexEngine(dex_yaml)
+def engine(dex_yaml: Path) -> Generator[DexEngine]:
+    eng = DexEngine(dex_yaml)
+    yield eng
+    eng.close()
 
 
 class TestDexEngineInit:

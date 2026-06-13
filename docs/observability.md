@@ -2,6 +2,8 @@
 
 **Complete guide to monitoring, debugging, and understanding DataEngineX in production.**
 
+> **Note on scope:** This document covers both library-level and application-level observability. dataenginex itself is a pure library — HTTP-level middleware, health endpoints, and request tracing are configured by the application (e.g., dex-studio).
+
 > **Quick Links:** [Metrics](#prometheus-metrics) · [Tracing](#opentelemetry-tracing) · [Grafana](#grafana-dashboards) · [Local Testing](#local-testing) · [Troubleshooting](#troubleshooting)
 
 ______________________________________________________________________
@@ -579,7 +581,7 @@ ______________________________________________________________________
 
 ### Prometheus alert rules (SLO-aligned)
 
-The actual rule definitions live in [`infradex/monitoring/alerts/dataenginex-alerts.yml`](https://github.com/TheDataEngineX/infradex/blob/main/monitoring/alerts/dataenginex-alerts.yml). They expose three alerts—latency, error rate, and saturation—scoped to prod. Every alert annotation links to the [deployment runbook](https://github.com/TheDataEngineX/dataenginex/blob/main/docs/DEPLOY_RUNBOOK.md).
+The actual rule definitions live in [`infradex/monitoring/alerts/dataenginex-alerts.yml`](https://github.com/TheDataEngineX/infradex/blob/main/monitoring/alerts/dataenginex-alerts.yml). They expose three alerts—latency, error rate, and saturation—scoped to prod.
 
 | Alert | Environment | Threshold | Severity | Receiver |
 |-------|-------------|-----------|----------|----------|
@@ -613,7 +615,7 @@ kubectl apply -f https://raw.githubusercontent.com/TheDataEngineX/infradex/main/
 kubectl rollout restart deployment/alertmanager
 ```
 
-3. Verify the alerts appear in Alertmanager UI and reference the release runbook described in [`docs/DEPLOY_RUNBOOK.md`](https://github.com/TheDataEngineX/dataenginex/blob/main/docs/DEPLOY_RUNBOOK.md).
+3. Verify the alerts appear in Alertmanager UI and reference the release runbook described in the `infradex` repository.
 
 If you manage the stack via ArgoCD, push the changes to the kustomize overlay and let ArgoCD sync the deployments automatically rather than running the commands above manually.
 
