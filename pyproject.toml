@@ -1,6 +1,6 @@
 [project]
 name = "dataenginex"
-version = "0.4.2"
+version = "0.4.1"
 description = "DataEngineX — open-source, self-hosted, local-first Data + ML + AI workbench library"
 authors = [{ name = "Jay", email = "jayapal.myaka99@gmail.com" }]
 readme = "src/dataenginex/README.md"
@@ -24,7 +24,11 @@ dependencies = [
 dex = "dataenginex.cli.main:dex"
 
 [project.optional-dependencies]
-cloud = ["boto3>=1.43.7", "google-cloud-storage>=3.10.1", "google-cloud-bigquery>=3.41.0"]
+cloud = [
+    "boto3>=1.43.7",
+    "google-cloud-storage>=3.10.1",
+    "google-cloud-bigquery>=3.41.0",
+]
 delta = ["deltalake>=0.24.0"]
 postgres = ["asyncpg>=0.31.0"]
 qdrant = ["qdrant-client>=1.18.0"]
@@ -33,12 +37,19 @@ pytorch = ["torch>=2.0.0"]
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.3", "pytest-cov>=7.1.0", "pytest-asyncio>=1.3.0",
-    "ruff>=0.15.14", "mypy>=2.1.0",
-    "types-pyyaml>=6.0.12.20260408", "types-requests>=2.33.0.20260503",
-    "poethepoet>=0.46.0", "uv>=0.11.16",
-    "mkdocs-material>=9.7.6", "mkdocstrings[python]>=1.0.4",
-    "pre-commit>=4.6.0", "pip-audit>=2.10.0",
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "pytest-asyncio>=1.3.0",
+    "ruff>=0.15.14",
+    "mypy>=2.1.0",
+    "types-pyyaml>=6.0.12.20260408",
+    "types-requests>=2.33.0.20260503",
+    "poethepoet>=0.46.0",
+    "uv>=0.11.16",
+    "mkdocs-material>=9.7.6",
+    "mkdocstrings[python]>=1.0.4",
+    "pre-commit>=4.6.0",
+    "pip-audit>=2.10.0",
 ]
 data = ["pyspark>=4.1.2"]
 notebook = ["pandas>=3.0.2"]
@@ -74,18 +85,33 @@ warn_unused_configs = true
 
 [[tool.mypy.overrides]]
 module = [
-    "structlog.*", "prometheus_client.*", "arq.*", "asyncpg.*",
-    "qdrant_client.*", "boto3.*", "google.auth.*", "google.cloud.*",
-    "google.api_core.*", "pyarrow.*", "mlflow.*", "sentence_transformers.*",
-    "litellm.*", "pyspark.*", "torch.*", "deltalake.*",
+    "structlog.*",
+    "prometheus_client.*",
+    "arq.*",
+    "asyncpg.*",
+    "qdrant_client.*",
+    "boto3.*",
+    "google.auth.*",
+    "google.cloud.*",
+    "google.api_core.*",
+    "pyarrow.*",
+    "mlflow.*",
+    "sentence_transformers.*",
+    "litellm.*",
+    "pyspark.*",
+    "torch.*",
+    "deltalake.*",
 ]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = [
-    "dataenginex.data.quality.spark", "dataenginex.data.connectors.spark",
-    "dataenginex.data.connectors.dbt", "dataenginex.data.connectors.delta",
-    "dataenginex.ai.vectorstore", "dataenginex.lakehouse.storage",
+    "dataenginex.data.quality.spark",
+    "dataenginex.data.connectors.spark",
+    "dataenginex.data.connectors.dbt",
+    "dataenginex.data.connectors.delta",
+    "dataenginex.ai.vectorstore",
+    "dataenginex.lakehouse.storage",
     "dataenginex.ml.training",
 ]
 warn_unused_ignores = false

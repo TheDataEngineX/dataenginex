@@ -35,8 +35,14 @@ shell = "coverage run -m pytest tests/ -v && coverage combine && coverage html &
 [tool.poe.tasks.check-all]
 sequence = ["quality", "test-cov-core"]
 
+[tool.poe.tasks.format]
+cmd = "ruff format src/ tests/"
+
 [tool.poe.tasks.autofix]
-cmd = "ruff check --fix src/ tests/ && ruff format src/ tests/"
+shell = "ruff check --fix src/ tests/ && ruff format src/ tests/"
+
+[tool.poe.tasks.lint-fix]
+sequence = ["autofix"]
 
 [tool.poe.tasks.clean]
-cmd = "rm -rf .pytest_cache .mypy_cache .ruff_cache dist build htmlcov .coverage* && find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; echo 'cleaned'"
+shell = "rm -rf .pytest_cache .mypy_cache .ruff_cache dist build htmlcov .coverage* && find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; echo 'cleaned'"
