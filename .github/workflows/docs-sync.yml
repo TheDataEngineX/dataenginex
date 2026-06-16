@@ -3,20 +3,20 @@ name: Trigger Docs Sync
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag to sync to website'
+        description: "Version tag to sync to website"
         required: false
-        default: ''
+        default: ""
 
 jobs:
   dispatch:
     runs-on: ubuntu-latest
     steps:
       - name: Send repository_dispatch to website
-        uses: peter-evans/repository-dispatch@v3
+        uses: peter-evans/repository-dispatch@v4
         with:
           token: ${{ secrets.DOCS_SYNC_PAT }}
           repository: TheDataEngineX/website

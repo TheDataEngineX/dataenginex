@@ -4,6 +4,17 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.4.1)"
+        required: true
+        type: string
+      ref:
+        description: "Git ref to build from (branch or SHA)"
+        required: false
+        default: "main"
+        type: string
 
 jobs:
   build:
@@ -13,6 +24,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           version: "latest"
@@ -46,6 +59,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           version: "latest"
@@ -62,8 +77,9 @@ jobs:
       - name: Create GitHub release + attach SBOM
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          gh release create ${{ github.ref_name }} \
-            --title "DEX ${{ github.ref_name }}" \
+          gh release create "$RELEASE_TAG" \
+            --title "DEX $RELEASE_TAG" \
             --generate-notes \
             "sbom-dex-${{ steps.version.outputs.version }}.json"
