@@ -30,16 +30,34 @@ except ImportError:
 
 
 def _has_java_runtime() -> bool:
-    """Return True when a Java runtime is discoverable for PySpark.
+    """Return True when a functional Java runtime exists for PySpark.
 
-    PySpark can launch via ``JAVA_HOME`` or a ``java`` executable on ``PATH``.
+    macOS ships a /usr/bin/java stub that just prints an install prompt and
+    exits non-zero, so we probe with -version rather than just checking PATH.
     """
+    import subprocess  # noqa: PLC0415
+
     java_home = os.environ.get("JAVA_HOME")
+    candidates: list[str] = []
     if java_home:
-        java_bin = os.path.join(java_home, "bin", "java")
-        if os.path.isfile(java_bin) and os.access(java_bin, os.X_OK):
-            return True
-    return shutil.which("java") is not None
+        candidates.append(os.path.join(java_home, "bin", "java"))
+    java_on_path = shutil.which("java")
+    if java_on_path:
+        candidates.append(java_on_path)
+    for java_bin in candidates:
+        if not (os.path.isfile(java_bin) and os.access(java_bin, os.X_OK)):
+            continue
+        try:
+            result = subprocess.run(
+                [java_bin, "-version"],
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                return True
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return False
 
 
 _HAS_JAVA_RUNTIME = _has_java_runtime()

@@ -247,9 +247,15 @@ def _make_preexec(memory_mb: int, cpu_time_s: int) -> Any:
         import resource  # noqa: PLC0415
 
         def _limit() -> None:
+            import contextlib  # noqa: PLC0415
+
             mb = memory_mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (mb, mb))
-            resource.setrlimit(resource.RLIMIT_CPU, (cpu_time_s, cpu_time_s))
+            # RLIMIT_AS is unsupported on some platforms (e.g. macOS/aarch64);
+            # swallow errors so the subprocess still runs without limits.
+            with contextlib.suppress(ValueError, OSError):
+                resource.setrlimit(resource.RLIMIT_AS, (mb, mb))
+            with contextlib.suppress(ValueError, OSError):
+                resource.setrlimit(resource.RLIMIT_CPU, (cpu_time_s, cpu_time_s))
 
         return _limit
     except ImportError:
