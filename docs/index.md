@@ -23,4 +23,6 @@ See [Quickstart](quickstart.md) for a full walkthrough with a sample project.
 - [Quickstart](quickstart.md) — Get up and running in 5 minutes
 - [Architecture](architecture.md) — Core patterns, module map, design decisions
 - [Development Setup](development.md) — Prerequisites, workflow, troubleshooting
+- [Release Notes](release-notes.md) — Full version history
+- [Observability](observability.md) — Metrics, logging, tracing
 - [Contributing](contributing.md) — How to contribute to the project

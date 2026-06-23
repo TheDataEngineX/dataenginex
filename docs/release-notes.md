@@ -1,141 +1,94 @@
 # Release Notes
 
-## v1.2.0 — 2026-05-21
+## [0.4.2] — 2026-06-23
 
-### Highlights
+### Added
 
-- **Pure library architecture** — `dataenginex` is now a pure Python library with no bundled HTTP server. Applications (`dex-studio`, your own FastAPI/Flask app) own the server layer entirely. `DexEngine` is the single entry point; it loads `dex.yaml`, inits `DexStore`, and wires all backends.
-- **`DexEngine` as application entry point** — single object instantiation hides all wiring complexity. Replaces the old `dex serve` pattern.
-- **`DexStore` persistence** — single DuckDB file at `.dex/store.duckdb` next to `dex.yaml`. Self-contained per project.
-- **`auth` extras removed** — `pyjwt`, `ldap3`, and `cryptography` removed from the package. Auth/RBAC lives in application layers (`dex-studio`) only.
-- **Module clarification** — `ml/` is classical ML (training, registry, serving, drift); `ai/` is LLM/agents/RAG/vectorstore; `orchestration/` is background scheduling.
-- **`*.duckdb` excluded from git** — generated store files are project-local and should not be committed.
+- Example scripts refreshed: `08_spark_ml.py`, `09_feature_engineering.py`, `10_model_analysis.py` — demonstrate PySpark ML, feature transforms, and drift detection
+- Documentation cleanup across all docs
 
-### Breaking changes
+### Changed
 
-- `dex serve` CLI command removed. Start your own ASGI app with `uvicorn` instead.
-- `dataenginex[auth]` extra removed. Install `pyjwt` / `ldap3` directly in your application if needed.
-- `dataenginex.api` no longer contains auth/RBAC/SCIM/LDAP. It now provides HTTP error types and response models only.
-
-### Migration
-
-```python
-# Before (old server pattern)
-# dex serve --config dex.yaml
-
-# After — own the server layer
-from dataenginex.engine import DexEngine
-from fastapi import FastAPI
-import uvicorn
-
-engine = DexEngine("dex.yaml")
-app = FastAPI()
-
-@app.get("/health")
-def health():
-    return engine.health()
-
-uvicorn.run(app, host="0.0.0.0", port=8000)
-```
+- Version bumped to 0.4.2
 
 ### Verification checklist
 
 1. `uv run poe lint` — Ruff checks clean
 1. `uv run poe typecheck` — mypy strict, 0 errors
 1. `uv run poe test` — all tests pass
-1. `uv run --with fastapi --with uvicorn python examples/02_api_quickstart.py` — server starts, `/health` returns `{"status":"healthy"}`
 
 ______________________________________________________________________
 
-## v1.1.1 — 2026-05-07
+## [0.4.1] - 2026-06-12
 
-### Highlights
+### Added
 
-- **Reflex compatibility** — `rich` fully removed from CLI layer (`cli/main.py`, `cli/run.py`, `cli/train.py`). Output now uses plain `click.echo`. Fixes `ImportError` when running alongside Reflex (which pins `rich<14`).
+- `dataenginex._json` — drop-in `orjson`-backed JSON shim (`dumps`, `loads`, `JSONResponse`) replacing stdlib `json` across the library for ~3–5× serialization throughput
+- `DeltaConnector` — native Delta Lake read/write via `deltalake` (new `delta` optional extra: `pip install "dataenginex[delta]"`)
+- `ml.features.builtin` — built-in feature transformers: `StandardScalerTransform`, `MinMaxScalerTransform`, `OneHotEncoderTransform`, `PolynomialFeaturesTransform`
+- `core.interfaces` — new `Closeable` and `AsyncCloseable` protocols for uniform resource lifecycle
+- `orjson>=3.11.0` and `zstandard>=0.25.0` promoted to core runtime dependencies
 
-### Breaking changes
+### Changed
 
-None. CLI output is functionally identical.
+- **Lakehouse storage** (`lakehouse/storage.py`) — full rewrite: unified `LakehouseStorage` with pluggable backends (local, S3, GCS), Zstandard compression throughout, columnar partition pruning
+- **Lakehouse catalog** (`lakehouse/catalog.py`) — catalog entries now carry partition stats and schema fingerprints; `register` / `resolve` API stabilised
+- **ML registry** (`ml/registry.py`) — artifact versioning with aliasing (`promote_alias`), stage transitions (`development` → `staging` → `production`), and metadata search
+- **ML training** (`ml/training.py`) — `TrainingJob` lifecycle management, early-stopping callbacks, cross-validation harness, experiment comparison utilities
+- **Pagination** (`api/pagination.py`) — cursor-based and page-number strategies unified under `PaginationResult`; `paginate_query` helper works with any iterable
+- **Store** (`store.py`) — async-safe DuckDB connection pool, `get_pipeline_runs` and `list_model_artifacts` now return typed dataclasses
+- **SecOps audit** (`secops/audit.py`) — structured audit events with severity levels, retention policy enforcement, export to JSONL
+- **AI runtime** (`ai/runtime/executor.py`) — tool call concurrency limit, timeout per tool, structured error envelopes
+- **Config loader** (`config/loader.py`) — environment variable interpolation (`${VAR}`) and `include:` directive for config composition
+- `zstandard` used for pipeline run history compression reducing on-disk footprint by ~60%
 
-### Verification checklist
+### Fixed
 
-1. `uv run poe lint` — Ruff checks clean
-1. `uv run poe typecheck` — mypy strict, 0 errors
-1. `uv run poe test` — 790 passed, 20 skipped
-
-______________________________________________________________________
-
-## v1.1.0 — 2026-05-06
-
-### Highlights
-
-- **Enterprise auth & RBAC** — SCIM provisioning, role-based access, enterprise SSO integration
-- **LiteLLM / vLLM routing** — unified LLM gateway with cost tracking and load balancing
-- **Langfuse observability** — LLM trace logging, evals, and prompt management
-- **LightRAG integration** — graph-based retrieval for hybrid RAG pipelines
-- **AI agent memory** — persistent agent memory subsystem with configurable backends
-- **Domain metadata layer** — structured domain extraction and plugin system
-- **rich removed** — CLI output now uses `click.echo`; rich is no longer a framework dependency
-
-### Breaking changes
-
-None. All new features are additive.
-
-### Verification checklist
-
-1. `uv run poe lint` — Ruff checks clean
-1. `uv run poe typecheck` — mypy strict (125 source files, 0 errors)
-1. `uv run poe test` — 790 passed, 20 skipped
-1. `curl http://localhost:17000/health` — returns `{"status":"healthy"}`
+- `mypy --strict` passes cleanly across all modules after strict type annotation pass
+- `DeltaConnector` and `LakehouseStorage` excluded from coverage thresholds (require live filesystems); coverage gate unchanged for all other modules
 
 ______________________________________________________________________
 
-## v0.5.0 — 2026-03-01
+## [0.4.0] - 2026-02-21
 
-### Highlights
+> **Scope reset from 1.x.** Versions 1.0.0–1.1.2 were prematurely tagged stable. Resetting to `0.4.0` to honestly reflect pre-1.0 maturity. See [ADR-0007](https://github.com/TheDataEngineX/docs/blob/main/adr/0007-local-first-scope-reset.md) for rationale. The 1.x versions on PyPI are yanked but remain installable by exact pin (`pip install 'dataenginex==1.1.2'`); plain `pip install dataenginex` now resolves to `0.4.0`.
 
-- **Storage abstraction layer** — `list_objects(prefix)` and `exists(path)` on `StorageBackend` ABC with implementations across all 6 backends (Local, BigQuery, JSON, Parquet, S3, GCS). New `get_storage(uri)` factory resolves `s3://`, `gs://`, and local paths automatically (#89)
-- **ML serving endpoints** — `POST /api/v1/predict`, `GET /api/v1/models`, `GET /api/v1/models/{name}` with Pydantic request/response models and ML-specific Prometheus metrics for latency, throughput, and in-flight predictions (#92)
-- **Drift monitoring scheduler** — `DriftScheduler` runs background drift checks on registered models, publishes PSI scores to Prometheus gauges, and fires alert counters when drift exceeds thresholds. Includes Prometheus alert rules for moderate, severe, spike, and stale drift conditions (#93)
-- **Comprehensive docstrings** — Google-style docstrings added across 55+ methods and 9 Pydantic models covering all public APIs (#88)
-- **Cloud emulator testing** — Docker Compose stack with LocalStack (S3) and fake-gcs-server (GCS) plus 25 integration tests with auto-detection
-- **Infrastructure fixes** — Dockerfile runtime stage now copies the core package; docs workflow uses `--frozen` sync
+### Added
 
-### Breaking changes
+- Stable `__all__` exports in every subpackage `__init__.py`
+- `from __future__ import annotations` in all public modules
+- Comprehensive module-level docstrings with usage examples
+- New public API exports: `ComponentHealth`, `AuthMiddleware`, `AuthUser`,
+  `create_token`, `decode_token`, `BadRequestError`, `NotFoundError`,
+  `PaginationMeta`, `RateLimiter`, `RateLimitMiddleware`,
+  `ConnectorStatus`, `FetchResult`, `ColumnProfile`, `get_logger`, `get_tracer`
 
-None. All new features are additive.
+### Changed
 
-### Verification checklist
-
-1. `uv run poe lint` — Ruff checks clean
-1. `uv run poe typecheck` — mypy strict (40 files, 0 errors)
-1. `uv run poe test` — 299 passed, 28 skipped
-1. `docker compose build` — multi-stage Dockerfile builds successfully
-1. `docker compose -f docker-compose.test.yml up -d` — emulators start healthy
+- Reorganized `__all__` in all subpackages for logical grouping
+- Updated package version to 0.4.0
 
 ______________________________________________________________________
 
-## v0.4.11 — 2026-02-27
+## [0.3.5] - 2026-02-13
 
-### Highlights
+### Added
 
-- **Environment-labeled metrics** — Added `environment` label support across HTTP metrics counters/histograms/gauges and middleware emission
-- **Aligned alert rules** — Histogram quantile expressions use explicit bucket aggregation by `le` and `environment`
-- **CSV-canonical roadmap** — Standardized docs and release prep metadata
+- Production hardening: structured logging, Prometheus/OTel, health probes
+- Data connectors: `RestConnector`, `FileConnector` with async interface
+- Schema registry with versioned schema management
+- Data profiler with automated dataset statistics
+- Lakehouse catalog, partitioning, and storage backends
+- ML framework: trainer, model registry, drift detection, serving
+- Warehouse transforms and persistent lineage tracking
+- JWT authentication middleware
+- Rate limiting middleware
+- Cursor-based pagination utilities
+- Versioned API router (`/api/v1/`)
 
 ______________________________________________________________________
 
-## v1.0.0 — 2026-02-11
-
-### Highlights
-
-- **SLO-aware monitoring**: Alerting rules now track latency, error rates, and saturation per environment, routed through Alertmanager runbooks aligned with the SLO definitions documented in `monitoring/alerts/dataenginex-alerts.yml` and `monitoring/alertmanager.yml`.
-- **Environment-labeled metrics**: The Prometheus client now exports all HTTP counters, histograms, and gauges with an `environment` label so dashboards & alerts can differentiate `dev`/`stage`/`prod` workloads without duplicating services.
-- **Pyconcepts-facing API**: Added `/api/external-data` (wraps `pyconcepts.external_data.fetch_external_data`) and `/api/insights` (text/event-stream) so downstream runners can consume the helper data + streaming insights from `pyconcepts`.
-- **Docs/tests**: `tests/test_main.py` and `tests/test_metrics.py` cover the new endpoints and metrics labels, and the documentation now explains how to validate the new alerts and APIs.
-
-### Verification checklist
-
-1. `uv run poe lint` — Ruff/mypy checks green
-1. `uv run pytest -v` — 31 tests including the new endpoints pass
-1. `docker compose build` — multi-stage Dockerfile builds
+[0.3.5]: https://github.com/TheDataEngineX/dataenginex/releases/tag/v0.3.5
+[0.4.0]: https://github.com/TheDataEngineX/dataenginex/compare/v0.3.5...v0.4.0
+[0.4.1]: https://github.com/TheDataEngineX/dataenginex/compare/v0.4.0...v0.4.1
+[0.4.2]: https://github.com/TheDataEngineX/dataenginex/compare/v0.4.1...v0.4.2
