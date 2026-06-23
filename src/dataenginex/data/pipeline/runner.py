@@ -12,6 +12,7 @@ Layer resolution (explicit beats implicit):
 from __future__ import annotations
 
 import contextlib
+import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -78,7 +79,20 @@ class PipelineResult:
 def _build_transform_kwargs(step: TransformStepConfig) -> dict[str, Any]:
     """Extract non-None fields from a transform step config."""
     kwargs: dict[str, Any] = {}
-    for field in ("condition", "expression", "name", "columns", "key", "sql"):
+    for field in (
+        "condition",
+        "expression",
+        "name",
+        "columns",
+        "key",
+        "sql",
+        "mapping",
+        "defaults",
+        "group_by",
+        "agg_exprs",
+        "partition_by",
+        "order_by",
+    ):
         value = getattr(step, field, None)
         if value is not None:
             kwargs[field] = value
@@ -269,6 +283,14 @@ class PipelineRunner:
         self._register_lakehouse_views(conn, log)
 
         rows_input = self._extract(conn, name, cfg, log)
+
+        # Empty source (e.g. SSE window with no events) — nothing to transform or load.
+        if rows_input == 0:
+            log.info("pipeline complete — empty source, nothing to write", pipeline=name)
+            return PipelineResult(
+                pipeline=name, success=True, rows_input=0, rows_output=0, steps_completed=0
+            )
+
         current_table, steps = self._transform(conn, name, cfg, log)
         self._check_quality(conn, name, cfg, current_table, log)
         rows_output = self._load(conn, name, cfg, current_table, log)
@@ -346,7 +368,12 @@ class PipelineRunner:
         source_config = sources[cfg.source]
         connector_cls = connector_registry.get(source_config.type)
 
-        connector_kwargs: dict[str, Any] = dict(source_config.connection)
+        # connection holds credentials; options holds connector-specific settings.
+        # options wins on conflicts so connectors can tune behaviour per-source.
+        connector_kwargs: dict[str, Any] = {
+            **dict(source_config.connection),
+            **dict(source_config.options),
+        }
         if source_config.path and "path" not in connector_kwargs:
             src_path = source_config.path
             if self._project_dir and not Path(src_path).is_absolute():
@@ -361,9 +388,20 @@ class PipelineRunner:
         raw_data = connector.read(table=read_table)
         connector.disconnect()
 
-        conn.register("_raw_src", pa.Table.from_pylist(raw_data))
-        conn.execute("CREATE OR REPLACE TABLE bronze AS SELECT * FROM _raw_src")
-        log.info("extract complete (source)", source=cfg.source, rows=len(raw_data))
+        # Connectors may return a pa.Table (e.g. HttpConnector) to avoid the
+        # cost of converting 10M+ rows through Python dicts.
+        arrow_table = raw_data if isinstance(raw_data, pa.Table) else pa.Table.from_pylist(raw_data)
+
+        # Empty result (e.g. SSE window with no matching events) — nothing to load.
+        if len(arrow_table) == 0 or len(arrow_table.schema) == 0:
+            log.info("extract complete (source) — empty result", source=cfg.source)
+            conn.execute("CREATE OR REPLACE TABLE bronze (placeholder VARCHAR)")
+            rows = 0
+        else:
+            conn.register("_raw_src", arrow_table)
+            conn.execute("CREATE OR REPLACE TABLE bronze AS SELECT * FROM _raw_src")
+            rows = len(arrow_table)
+        log.info("extract complete (source)", source=cfg.source, rows=rows)
 
         if self._lineage is not None:
             self._lineage.record(
@@ -371,12 +409,12 @@ class PipelineRunner:
                 layer="bronze",
                 source=cfg.source,
                 destination=f"bronze/{name}",
-                input_count=len(raw_data),
-                output_count=len(raw_data),
+                input_count=rows,
+                output_count=rows,
                 pipeline_name=name,
                 step_name="extract",
             )
-        return len(raw_data)
+        return rows
 
     def _extract_from_lakehouse(
         self,
@@ -459,9 +497,28 @@ class PipelineRunner:
                 msg = f"Transform validation failed: {errors}"
                 raise PipelineStepError(step=f"transform-{i}", cause=msg, pipeline=name)
 
+            prev_table = current_table
+            prev_row = conn.execute(f"SELECT count(*) FROM {prev_table}").fetchone()
+            prev_rows = int(prev_row[0]) if prev_row else 0
+
             current_table = transform.apply(conn, current_table)
             steps_completed += 1
             log.info("transform complete", step=i, type=step_config.type)
+
+            if self._lineage is not None:
+                out_row = conn.execute(f"SELECT count(*) FROM {current_table}").fetchone()
+                out_rows = int(out_row[0]) if out_row else 0
+                self._lineage.record(
+                    operation="transform",
+                    layer=_infer_layer(name),
+                    source=prev_table,
+                    destination=current_table,
+                    input_count=prev_rows,
+                    output_count=out_rows,
+                    pipeline_name=name,
+                    step_name=f"transform-{i}:{step_config.type}",
+                    metadata={"transform_type": step_config.type, "step_index": i},
+                )
 
         return current_table, steps_completed
 
@@ -473,29 +530,60 @@ class PipelineRunner:
         table: str,
         log: Any,
     ) -> None:
-        """Run quality gate if configured."""
+        """Run quality gate if configured. Records result as a lineage event."""
         if not cfg.quality:
             return
         q = cfg.quality
-        # Resolve _data placeholder to the actual current table.
         resolved_sql = q.custom_sql.replace("_data", table) if q.custom_sql else None
         result = check_quality(
             conn,
             table,
             completeness=q.completeness,
             uniqueness=q.uniqueness,
+            row_count_min=q.row_count_min,
             custom_sql=resolved_sql,
         )
         outcome = "pass" if result.passed else "fail"
         for gate, configured in (
             ("completeness", q.completeness is not None),
             ("uniqueness", q.uniqueness is not None),
+            ("row_count_min", q.row_count_min is not None),
             ("custom_sql", q.custom_sql is not None),
         ):
             if configured:
                 quality_gate_evaluations_total.labels(
                     pipeline=name, gate=gate, result=outcome
                 ).inc()
+
+        # Record quality result as a lineage event for full observability.
+        if self._lineage is not None:
+            quality_score = (
+                result.completeness_score * result.uniqueness_score
+                if result.completeness_score < 1.0 or result.uniqueness_score < 1.0
+                else 1.0
+            )
+            count_row = conn.execute(f"SELECT count(*) FROM {table}").fetchone()
+            row_count = int(count_row[0]) if count_row else 0
+            self._lineage.record(
+                operation="quality",
+                layer=_infer_layer(name),
+                source=table,
+                destination=f"{_infer_layer(name)}/{name}",
+                input_count=row_count,
+                output_count=row_count if result.passed else 0,
+                pipeline_name=name,
+                step_name="quality_gate",
+                quality_score=round(quality_score, 4),
+                metadata={
+                    "passed": result.passed,
+                    "completeness": round(result.completeness_score, 4),
+                    "uniqueness": round(result.uniqueness_score, 4),
+                    "custom_passed": result.custom_passed,
+                    "schema_violations": result.schema_violations,
+                    **result.details,
+                },
+            )
+
         if not result.passed:
             msg = (
                 f"Quality gate failed: completeness={result.completeness_score:.2f}, "
@@ -530,7 +618,25 @@ class PipelineRunner:
         layer_dir.mkdir(parents=True, exist_ok=True)
         output_name = cfg.destination or name
         output_path = layer_dir / f"{output_name}.parquet"
-        conn.execute(f"COPY {table} TO '{output_path}' (FORMAT PARQUET)")
+
+        # Inject audit metadata columns before writing. These are constant per run
+        # so they don't affect row count — they are useful for lineage in downstream
+        # SQL queries and external BI tools.
+        ingested_at = datetime.datetime.now(datetime.UTC).isoformat()
+        source_name = (cfg.source or name).replace("'", "''")
+        safe_name = name.replace("'", "''")
+        meta_table = f"{table}_with_meta"
+        conn.execute(f"""
+            CREATE OR REPLACE TABLE {meta_table} AS
+            SELECT
+                *,
+                '{ingested_at}'::TIMESTAMPTZ AS _dex_ingested_at,
+                '{safe_name}'               AS _dex_pipeline,
+                '{target_layer}'            AS _dex_layer,
+                '{source_name}'             AS _dex_source
+            FROM {table}
+        """)
+        conn.execute(f"COPY {meta_table} TO '{output_path}' (FORMAT PARQUET)")
         log.info("load complete", layer=target_layer, path=str(output_path), rows=rows)
 
         if self._lineage is not None:

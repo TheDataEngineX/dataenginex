@@ -54,13 +54,19 @@ class SourceConfig(BaseModel):
 class TransformStepConfig(BaseModel):
     """A single transform step in a pipeline."""
 
-    type: str  # filter, derive, cast, deduplicate, sql, etc.
-    condition: str | None = None
-    expression: str | None = None
-    name: str | None = None  # for derive: column name
-    columns: dict[str, str] | list[str] | None = None  # for cast: {col: type}
-    key: str | list[str] | None = None  # for deduplicate: key columns
-    sql: str | None = None
+    type: str  # filter, derive, cast, deduplicate, sql, rename, drop_columns, fill_null, aggregate
+    condition: str | None = None  # filter
+    expression: str | None = None  # derive, window
+    name: str | None = None  # derive, window: output column name
+    columns: dict[str, str] | list[str] | None = None  # cast: {col: type}, drop_columns: [col, ...]
+    key: str | list[str] | None = None  # deduplicate
+    sql: str | None = None  # sql
+    mapping: dict[str, str] | None = None  # rename: {old_name: new_name}
+    defaults: dict[str, Any] | None = None  # fill_null: {col: default_value}
+    group_by: list[str] | None = None  # aggregate
+    agg_exprs: dict[str, str] | None = None  # aggregate: {output_col: "expression"}
+    partition_by: list[str] | None = None  # window
+    order_by: str | None = None  # window
     options: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -69,6 +75,7 @@ class QualityCheckConfig(BaseModel):
 
     completeness: float | None = None  # min non-null ratio (0.0-1.0)
     uniqueness: list[str] | None = None  # columns that must be unique
+    row_count_min: int | None = None  # minimum number of rows required
     freshness_hours: float | None = None
     custom_sql: str | None = None
 

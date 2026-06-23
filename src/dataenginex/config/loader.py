@@ -20,6 +20,7 @@ import yaml
 from pydantic import ValidationError
 
 from dataenginex.config.schema import DexConfig
+from dataenginex.config.settings import DexSettings
 from dataenginex.core.exceptions import ConfigError
 
 logger = structlog.get_logger()
@@ -28,17 +29,26 @@ logger = structlog.get_logger()
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-(.*?))?\}")
 
 
-def resolve_env_vars(text: str) -> str:
+def resolve_env_vars(text: str, env: dict[str, str] | None = None) -> str:
     """Replace ``${VAR}`` and ``${VAR:-default}`` in *text*.
+
+    Args:
+        text: Raw YAML/config text containing ``${VAR}`` placeholders.
+        env:  Variable map to resolve against.  Defaults to ``os.environ``
+              when *None*.  Callers that have loaded a :class:`DexSettings`
+              instance should pass ``settings.as_env_dict()`` here so
+              ``.env`` file values are included without mutating the process
+              environment.
 
     Raises:
         ConfigError: If a variable has no value and no default.
     """
+    _env: dict[str, str] = env if env is not None else dict(os.environ)
 
     def _replace(match: re.Match[str]) -> str:
         var_name = match.group(1)
         default = match.group(2)
-        value = os.environ.get(var_name)
+        value = _env.get(var_name)
         if value is not None:
             return value
         if default is not None:
@@ -63,7 +73,7 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     return merged
 
 
-def _load_yaml(path: Path) -> dict[str, Any]:
+def _load_yaml(path: Path, env: dict[str, str] | None = None) -> dict[str, Any]:
     """Read a YAML file, resolve env vars, and return the parsed dict."""
     if not path.exists():
         msg = f"Config file not found: {path}"
@@ -72,7 +82,7 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     raw_text = path.read_text(encoding="utf-8")
 
     try:
-        resolved_text = resolve_env_vars(raw_text)
+        resolved_text = resolve_env_vars(raw_text, env=env)
     except ConfigError:
         raise
     except Exception as exc:
@@ -106,10 +116,11 @@ def load_config(
     Raises:
         ConfigError: If the file is missing or cannot be parsed.
     """
-    data = _load_yaml(path)
+    env = DexSettings.for_config(path).as_env_dict()
+    data = _load_yaml(path, env=env)
 
     if overlay is not None:
-        overlay_data = _load_yaml(overlay)
+        overlay_data = _load_yaml(overlay, env=env)
         data = _deep_merge(data, overlay_data)
 
     try:
