@@ -135,12 +135,32 @@ def _check_schema(
                 logger.warning(_SCHEMA_CHECK_FAILED, table=table, violation=msg)
 
 
+def _check_row_count(
+    total_rows: int,
+    min_rows: int,
+    table: str,
+    result: QualityResult,
+) -> None:
+    """Fail if the table has fewer rows than the minimum."""
+    if total_rows < min_rows:
+        result.passed = False
+        result.details["row_count"] = total_rows
+        result.details["row_count_min"] = min_rows
+        logger.warning(
+            "quality check failed: row_count_min",
+            table=table,
+            rows=total_rows,
+            minimum=min_rows,
+        )
+
+
 def check_quality(
     conn: duckdb.DuckDBPyConnection,
     table: str,
     *,
     completeness: float | None = None,
     uniqueness: list[str] | None = None,
+    row_count_min: int | None = None,
     schema: list[ColumnSpec] | None = None,
     custom_sql: str | None = None,
 ) -> QualityResult:
@@ -172,6 +192,9 @@ def check_quality(
         logger.info("quality check: empty table — passing vacuously", table=table)
         return result
 
+    if row_count_min is not None:
+        _check_row_count(total_rows, row_count_min, table, result)
+
     if completeness is not None:
         _check_completeness(conn, table, completeness, total_rows, result)
 
@@ -179,14 +202,22 @@ def check_quality(
         _check_uniqueness(conn, table, uniqueness, total_rows, result)
 
     if custom_sql is not None:
-        custom_row = conn.execute(custom_sql).fetchone()
-        custom_result = int(custom_row[0]) if custom_row else 0
-        result.custom_passed = custom_result > 0
-        if not result.custom_passed:
-            result.passed = False
-            logger.warning("quality check failed: custom SQL", table=table)
+        _check_custom_sql(conn, table, custom_sql, result)
 
     if result.passed:
         logger.info("quality check passed", table=table)
 
     return result
+
+
+def _check_custom_sql(
+    conn: duckdb.DuckDBPyConnection,
+    table: str,
+    custom_sql: str,
+    result: QualityResult,
+) -> None:
+    custom_row = conn.execute(custom_sql).fetchone()
+    result.custom_passed = int(custom_row[0]) > 0 if custom_row else False
+    if not result.custom_passed:
+        result.passed = False
+        logger.warning("quality check failed: custom SQL", table=table)

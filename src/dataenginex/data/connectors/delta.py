@@ -130,7 +130,7 @@ class DeltaConnector(BaseConnector):
 
         table_path = str(self._path)
         write_mode = mode or self._mode
-        _write_deltalake(table_path, arrow_table, mode=write_mode, **kwargs)
+        _write_deltalake(table_path, arrow_table, mode=write_mode, **kwargs)  # type: ignore[call-overload]
         logger.info(
             "delta written",
             path=table_path,
