@@ -7,6 +7,18 @@ All notable changes to `dataenginex` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-06-23
+
+### Added
+
+- Example scripts refreshed: `08_spark_ml.py`, `09_feature_engineering.py`, `10_model_analysis.py` — demonstrate PySpark ML, feature transforms, and drift detection
+- `docs/release-notes.md` rewritten — cleaned up pre-reset 1.x entries, corrected version history to start from 0.3.5
+- `docs/observability.md` trimmed to library-level content only; HTTP/K8s content moved to `dex-studio/docs/observability.md`
+
+### Changed
+
+- Version bumped to 0.4.2
+
 ## [0.4.1] - 2026-06-12
 
 ### Added

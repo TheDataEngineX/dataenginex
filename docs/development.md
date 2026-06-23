@@ -38,13 +38,13 @@ This installs all Python dependencies and configures pre-commit hooks.
 ```bash
 # 1. Clone repo and create feature branch
 git clone https://github.com/TheDataEngineX/dataenginex.git
-cd dex
+cd dataenginex
 git checkout -b feat/issue-XXX-description dev
 
-# 3. Install Python deps & pre-commit hooks
+# 2. Install Python deps & pre-commit hooks
 uv run poe setup
 
-# 4. Verify setup
+# 3. Verify setup
 uv run poe check-all
 ```
 
@@ -53,12 +53,11 @@ All tests and linting should pass. You're ready to develop!
 ## Project Structure
 
 ```
-DEX/
+dataenginex/
 ├── src/dataenginex/        # Core framework package
 ├── examples/               # Runnable example scripts (01–10)
 ├── tests/                  # Test suite
 ├── docs/                   # Documentation
-├── monitoring/             # Local observability stack configs
 ├── .github/workflows/      # CI/CD pipelines
 ├── pyproject.toml          # Project config
 └── poe_tasks.toml          # Task definitions
@@ -160,24 +159,7 @@ uv run poe test-unit
 uv run poe check-all
 ```
 
-### Monitoring & Debugging
-
-```bash
-# View application logs
-tail -f logs/app.log
-
-# Enable debug logging
-export LOG_LEVEL=DEBUG
-uv run poe dev
-
-# Use Python debugger
-python -m pdb examples/02_api_quickstart.py
-
-# Prometheus metrics (if running)
-open http://localhost:9090
-```
-
-## Troubleshooting
+### Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
@@ -198,7 +180,7 @@ uv run poe test               # Run all tests
 uv run poe test-cov           # Tests with coverage report
 uv run poe security           # pip-audit vulnerability scan
 uv run poe pre-commit         # Run all pre-commit hooks
-uv run poe dev                # Run dev server (localhost:17000)
+uv run poe docker-up          # Run Docker Compose stack
 uv run poe clean              # Remove caches and build artifacts
 ```
 
