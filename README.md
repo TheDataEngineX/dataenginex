@@ -7,8 +7,6 @@
 
 The Python library that powers [DEX Studio](https://github.com/TheDataEngineX/dex-studio) — an open-source, self-hosted, local-first Data + ML + AI workbench for individuals and small teams. **Use the library directly when you want code; install DEX Studio when you want a UI.**
 
-> **Pre-1.0 status.** `0.4.0` is honest about it. See the [CHANGELOG scope-reset entry](CHANGELOG.md) for the rationale.
-
 ______________________________________________________________________
 
 ## Install
