@@ -12,7 +12,7 @@ cmd = "mypy src/dataenginex/ --config-file=pyproject.toml --no-incremental"
 env  = {UV_PYTHON = "3.13", UV_PROJECT_ENVIRONMENT = ".venv"}
 
 [tool.poe.tasks.security]
-cmd = "uv run pip-audit --progress-spinner off --ignore-vuln GHSA-5239-wwwm-4pmq --ignore-vuln CVE-2025-3000"
+cmd = "uv run pip-audit --progress-spinner off --ignore-vuln CVE-2025-3000"
 
 [tool.poe.tasks.actionlint]
 shell = """
