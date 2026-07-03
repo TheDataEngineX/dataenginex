@@ -58,7 +58,6 @@ class DexBackend(Protocol):
     ai_memory: Any
     ai_metrics: Any
     ai_episodic: Any
-    ai_audit: Any
     secops_audit: Any
     privacy_guard: Any
     plugins: Any
@@ -71,8 +70,6 @@ class DexBackend(Protocol):
     def model_registry(self) -> Any: ...
     @property
     def lineage(self) -> Any: ...
-    @property
-    def audit(self) -> Any: ...
 
     def run_pipeline(self, name: str) -> Any: ...
     def pipeline_stats(self) -> dict[str, int]: ...
@@ -683,7 +680,22 @@ class DexEngine:
         for layer in ("bronze", "silver", "gold"):
             for table in self.warehouse_tables(layer):
                 full_name = f"{layer}.{table['name']}"
-                results[full_name] = self.quality_check_table(full_name)
+                try:
+                    results[full_name] = self.quality_check_table(full_name)
+                except Exception:
+                    logger.exception("quality check failed", table=full_name)
+                    results[full_name] = None
+        # Log summary
+        passed = sum(1 for r in results.values() if r and r.get("passed"))
+        failed = sum(1 for r in results.values() if r and not r.get("passed"))
+        errored = sum(1 for r in results.values() if r is None)
+        logger.info(
+            "quality check all tables complete",
+            total=len(results),
+            passed=passed,
+            failed=failed,
+            errored=errored,
+        )
         self.store.record_quality_run(results)
         return results
 

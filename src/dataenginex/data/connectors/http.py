@@ -98,11 +98,8 @@ class HttpConnector(BaseConnector):
         with tempfile.TemporaryDirectory() as tmp:
             raw_path = Path(tmp) / "download.raw"
 
-            def _progress(count: int, block: int, total: int) -> None:
-                mb = count * block / 1_048_576
-                logger.debug("downloading", mb_downloaded=round(mb, 1))
-
-            urllib.request.urlretrieve(self._url, raw_path, _progress)
+            with urllib.request.urlopen(self._url, timeout=300) as resp, open(raw_path, "wb") as f:
+                shutil.copyfileobj(resp, f)
 
             # Decompress gzip to a plain TSV so DuckDB can read it without
             # needing to decompress multiple times during conversion.

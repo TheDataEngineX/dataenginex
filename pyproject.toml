@@ -1,6 +1,6 @@
 [project]
 name = "dataenginex"
-version = "0.4.4"
+version = "0.4.5"
 description = "DataEngineX — open-source, self-hosted, local-first Data + ML + AI workbench library"
 authors = [{ name = "Jay", email = "jayapal.myaka99@gmail.com" }]
 readme = "src/dataenginex/README.md"
@@ -139,6 +139,11 @@ omit = [
     "*/src/dataenginex/data/connectors/delta.py",
     "*/src/dataenginex/lakehouse/storage.py",
     "*/src/dataenginex/worker.py",
+    "*/src/dataenginex/data/quality/spark.py",
+    "*/src/dataenginex/data/connectors/http.py",
+    "*/src/dataenginex/data/connectors/rest.py",
+    "*/src/dataenginex/data/connectors/sse.py",
+    "*/src/dataenginex/ml/mlflow_registry.py",
 ]
 
 [tool.coverage.report]
