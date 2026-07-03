@@ -144,6 +144,9 @@ class PipelineRunner:
         self._feature_store = feature_store
         self._vector_store = vector_store
         self._embed_fn = embed_fn
+        # Temp directory for DuckDB spill-to-disk — prevents OOM on large datasets
+        self._tmp_dir = (self._data_dir.parent / "tmp" / "duckdb").resolve()
+        self._tmp_dir.mkdir(parents=True, exist_ok=True)
 
     # -------------------------------------------------------------------------
     # Public API
@@ -165,7 +168,7 @@ class PipelineRunner:
             log.info("pipeline dry run — validating only")
             return PipelineResult(pipeline=pipeline_name, success=True, dry_run=True)
 
-        conn = duckdb.connect(":memory:")
+        conn = duckdb.connect(":memory:", config={"temp_directory": str(self._tmp_dir)})
 
         try:
             return self._execute(conn, pipeline_name, pipeline_config, log)
@@ -210,7 +213,7 @@ class PipelineRunner:
             raise KeyError(msg)
         cfg = pipelines[pipeline_name]
         log = logger.bind(pipeline=pipeline_name, mode="preview")
-        conn = duckdb.connect(":memory:")
+        conn = duckdb.connect(":memory:", config={"temp_directory": str(self._tmp_dir)})
         try:
             self._register_lakehouse_views(conn, log)
             rows_input = self._extract(conn, pipeline_name, cfg, log)

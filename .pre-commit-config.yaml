@@ -25,10 +25,10 @@ repos:
     rev: 1.0.0
     hooks:
       - id: mdformat
-        exclude: '^(site/|\.github/)'
+        exclude: '^(site/|\.github/|\.venv/|\.pytest_cache/|examples/)'
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.12
+    rev: v0.15.20
     hooks:
       - id: ruff
         args: ["--fix"]
@@ -40,6 +40,11 @@ repos:
         name: mypy
         entry: uv run mypy
         language: system
-        args: ["--config-file=pyproject.toml", "--no-incremental", "src/dataenginex"]
+        args:
+          [
+            "--config-file=pyproject.toml",
+            "--no-incremental",
+            "src/dataenginex",
+          ]
         pass_filenames: false
         files: ^src/dataenginex/
