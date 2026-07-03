@@ -26,7 +26,7 @@ uv run python examples/09_feature_engineering.py
 uv run python examples/10_model_analysis.py
 ```
 
----
+______________________________________________________________________
 
 ## Examples
 

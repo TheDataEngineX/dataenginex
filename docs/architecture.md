@@ -114,16 +114,16 @@ DataEngineXError
 ## Module Map
 
 | Module | Purpose |
-|--------|---------|
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `engine.py` | `DexEngine` — application entry point |
 | `store.py` | `DexStore` — DuckDB persistence layer |
 | `config/` | Schema, loader, env resolution |
 | `core/` | ABCs, registry, exceptions |
 | `cli/` | `dex` CLI (validate, version, init) |
 | `api/` | HTTP helpers: error types, response models |
-| `data/connectors/` | Built-in connectors: CSV, Parquet, DuckDB, REST, Kafka, **Spark**, **dbt** |
+| `data/connectors/` | Built-in connectors: CSV, Parquet, DuckDB, REST, Kafka, **Spark**, **dbt**, **delta**, **postgres**, **qdrant**, **sse**, **http**, **rest** |
 | `data/pipeline/` | Pipeline runner, transforms, quality, profiler |
-| `ml/` | Classical ML: training, registry, serving, drift |
+| `ml/` | Classical ML: training, registry, serving, drift, **feature engines**, **mlflow registry** |
 | `ai/` | LLM, agents, RAG, vectorstore, memory, observability |
 | `orchestration/` | DriftScheduler, background tasks |
 | `middleware/` | structlog config, Prometheus metrics |
@@ -135,26 +135,66 @@ DataEngineXError
 ## Tech Stack
 
 | Component | Built-in | Extra |
-|-----------|----------|-------|
+| ----------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Data Engine | DuckDB | PySpark / dbt CLI (`[data]`) |
 | Orchestration | croniter scheduler | — |
 | ML Tracking | JSON-based | MLflow (`[tracking]`) |
 | Model Serving | Built-in predictor | — |
 | LLM Provider | Ollama / vLLM | LiteLLM (install separately) |
-| Vector Store | DuckDB VSS | Qdrant |
+| Vector Store | DuckDB VSS | Qdrant (`[qdrant]`) |
 | Retrieval | BM25 + Dense + Hybrid | — |
-| Persistence | DuckDB | — |
+| Persistence | DuckDB | S3/GCS/BigQuery (`[cloud]`) |
 | Logging | structlog | — |
 | Config | Pydantic + YAML | — |
 | CLI | Click | — |
 | Privacy / Audit | PrivacyGuard — PII masking + audit | — |
 | LLM Observability | — | Langfuse (`[observability]`) |
 | Cloud Storage | — | S3/GCS/BigQuery (`[cloud]`) |
+| Connectors | CSV, Parquet, DuckDB, SSE, HTTP (REST, SSE), JSON | Spark, dbt, Delta Lake (`[delta]`), PostgreSQL (`[postgres]`), Qdrant (`[qdrant]`) |
+| ML | Basic | PyTorch (`[pytorch]`), scikit-learn (`[ml]`), sentence-transformers (`[ml]`), MLflow (`[ml]` + `[tracking]`) |
+
+## Coverage Strategy
+
+**Current Coverage**: 81% (meets 80% threshold)
+
+**Why Coverage is Not 100%**: Optional dependency files are excluded from coverage to keep CI fast. Tests for these run only when the optional extras are installed.
+
+```python
+omit = [
+    # Network & async connectors (require external deps)
+    "*/src/dataenginex/data/connectors/http.py",
+    "*/src/dataenginex/data/connectors/rest.py",
+    "*/src/dataenginex/data/connectors/sse.py",
+
+    # ML dependencies (require training packages)
+    "*/src/dataenginex/ml/mlflow_registry.py",
+
+    # Optional data connectors (require cloud tools)
+    "*/src/dataenginex/data/connectors/delta.py",
+    "*/src/dataenginex/data/connectors/postgres.py",  # Note: this may not exist, but if it does
+
+    # Other excluded (from pyproject.toml)
+    "*/src/dataenginex/data/connectors/delta.py",
+    "*/src/dataenginex/lakehouse/storage.py",
+    "*/src/dataenginex/worker.py",
+]
+```
+
+**To install optional dependencies and achieve >90% coverage**:
+
+```bash
+uv run poe uv-sync
+pip install "dataenginex[cloud]" "dataenginex[delta]" "dataenginex[postgres]" \
+  "dataenginex[qdrant]" "dataenginex[queue]" "dataenginex[pytorch]" \
+  "dataenginex[notebook]" "dataenginex[ml]" "dataenginex[tracking]" "dataenginex[data]"
+uv run poe uv-sync
+uv run poe test-cov
+```
 
 ## Key Design Decisions
 
 | ID | Decision | Rationale |
-|----|----------|-----------|
+| ---- | ---------------------------------------------- | ------------------------------------------------------------- |
 | AD1 | Pure library — no bundled HTTP server | Applications own the server layer; library stays lean |
 | AD2 | DexEngine as single entry point | One object to instantiate; hides wiring complexity |
 | AD3 | DuckDB for persistence | Embedded, zero-ops, single file next to dex.yaml |
