@@ -23,8 +23,8 @@ Example::
 from __future__ import annotations
 
 import abc
+import hashlib
 import math
-import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -55,10 +55,19 @@ __all__ = [
 class Document:
     """A text document with optional metadata and embedding."""
 
-    id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
+    id: str = ""
     text: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     embedding: list[float] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.id:
+            # Content-hash id, not random: re-ingesting the same text upserts
+            # (overwrites) the existing entry instead of piling up a new
+            # random-id duplicate. InMemoryBackend has no eviction/cap, so a
+            # random id here means unbounded growth across repeated scheduled
+            # pipeline runs that re-ingest the same rows.
+            self.id = hashlib.sha256(self.text.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass
@@ -447,7 +456,10 @@ class RAGPipeline:
             Number of documents stored.
         """
         meta = metadata or [{} for _ in texts]
-        doc_ids = ids or [uuid.uuid4().hex[:16] for _ in texts]
+        # Content-hash ids by default (same scheme as Document.__post_init__)
+        # so re-ingesting identical text upserts instead of duplicating —
+        # see Document's docstring for why a random id here matters.
+        doc_ids = ids or [hashlib.sha256(t.encode("utf-8")).hexdigest()[:16] for t in texts]
 
         docs: list[Document] = []
         for doc_id, text, m in zip(doc_ids, texts, meta, strict=True):

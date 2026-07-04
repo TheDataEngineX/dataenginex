@@ -73,6 +73,7 @@ class DbtConnector(BaseConnector):
         target_database: str | None = None,
         profiles_dir: str | None = None,
         target: str = "dev",
+        timeout_s: float = 600,
         **kwargs: Any,
     ) -> None:
         if not _DBT_AVAILABLE:
@@ -84,6 +85,7 @@ class DbtConnector(BaseConnector):
         )
         self._profiles_dir = Path(profiles_dir) if profiles_dir else self._project_dir
         self._target = target
+        self._timeout_s = timeout_s
 
     def connect(self) -> None:
         project_file = self._project_dir / "dbt_project.yml"
@@ -131,7 +133,13 @@ class DbtConnector(BaseConnector):
             "--target",
             self._target,
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)  # noqa: S603,S607
+        try:
+            proc = subprocess.run(  # noqa: S603,S607
+                cmd, capture_output=True, text=True, timeout=self._timeout_s
+            )
+        except subprocess.TimeoutExpired as exc:
+            msg = f"dbt run timed out for model '{model}' after {self._timeout_s}s"
+            raise RuntimeError(msg) from exc
         if proc.returncode != 0:
             msg = f"dbt run failed for model '{model}':\n{proc.stdout}\n{proc.stderr}"
             raise RuntimeError(msg)

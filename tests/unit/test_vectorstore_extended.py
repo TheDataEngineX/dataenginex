@@ -20,9 +20,16 @@ class TestDocument:
         d = Document(text="hello")
         assert len(d.id) > 0
 
-    def test_ids_unique(self) -> None:
-        ids = {Document().id for _ in range(50)}
+    def test_ids_deterministic_by_content(self) -> None:
+        """Ids are content-hash derived, not random — re-ingesting the same
+        text must upsert (same id), and distinct texts must not collide."""
+        assert Document(text="hello").id == Document(text="hello").id
+        ids = {Document(text=f"doc-{i}").id for i in range(50)}
         assert len(ids) == 50
+
+    def test_explicit_id_not_overridden(self) -> None:
+        d = Document(id="custom-id", text="hello")
+        assert d.id == "custom-id"
 
     def test_metadata_default_empty(self) -> None:
         d = Document(text="x")
