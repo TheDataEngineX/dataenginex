@@ -29,13 +29,30 @@ logger = structlog.get_logger()
 
 # ── SQL / lakehouse ────────────────────────────────────────────────────────────
 
+# This tool is reachable from HTTP-exposed agent/native-call routes, so the SQL
+# it runs must be treated as untrusted input. DuckDB's enable_external_access
+# blocks filesystem/network access (read_csv/read_parquet/httpfs/ATTACH/etc.)
+# for the connection it's set on; the statement-shape check below is a second,
+# cheap layer against non-SELECT statements (COPY/INSTALL/PRAGMA/...).
+_READ_ONLY_PREFIXES = ("SELECT", "WITH")
+
+
+def _require_read_only(sql: str) -> None:
+    stripped = sql.strip().lstrip("(").strip()
+    if ";" in stripped[:-1]:  # allow a single optional trailing semicolon
+        raise ValueError("query tool only allows a single statement")
+    if not stripped.upper().startswith(_READ_ONLY_PREFIXES):
+        raise ValueError("query tool only allows read-only SELECT/WITH statements")
+
 
 def _query_sql(sql: str, database: str = ":memory:") -> list[dict[str, Any]]:
-    """Execute a SQL query via DuckDB and return results."""
+    """Execute a read-only SQL query via DuckDB and return results."""
     import duckdb
 
+    _require_read_only(sql)
     conn = duckdb.connect(database)
     try:
+        conn.execute("SET enable_external_access=false")
         result = conn.execute(sql)
         description = result.description or []
         if not description:
@@ -52,6 +69,7 @@ def _make_lakehouse_query(lakehouse_dir: Path) -> Callable[[str], list[dict[str,
     def _query_with_lakehouse(sql: str) -> list[dict[str, Any]]:
         import duckdb
 
+        _require_read_only(sql)
         conn = duckdb.connect(":memory:")
         try:
             for layer in ("bronze", "silver", "gold"):
@@ -65,6 +83,9 @@ def _make_lakehouse_query(lakehouse_dir: Path) -> Callable[[str], list[dict[str,
                             f"CREATE OR REPLACE VIEW {pf.stem}"
                             f" AS SELECT * FROM read_parquet('{safe}')"
                         )
+            # Lock the connection down to the views already registered above —
+            # untrusted `sql` below can no longer touch the filesystem/network.
+            conn.execute("SET enable_external_access=false")
             result = conn.execute(sql)
             description = result.description or []
             if not description:
