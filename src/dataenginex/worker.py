@@ -95,7 +95,8 @@ async def train_model(ctx: dict[str, Any], experiment_name: str) -> dict[str, An
             }
         from dataenginex.ml.training import train_experiment
 
-        metrics = train_experiment(config, experiment_name)
+        config_path = Path(os.environ.get("DEX_CONFIG_PATH", "dex.yaml")).resolve()
+        metrics = train_experiment(config, experiment_name, project_dir=config_path.parent)
         log.info("train.job.done", metrics=metrics)
         return {"success": True, "metrics": metrics, "error": None}
     except Exception as exc:

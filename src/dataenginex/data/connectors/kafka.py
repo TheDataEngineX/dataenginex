@@ -32,10 +32,11 @@ from __future__ import annotations
 
 import json
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 import structlog
-from confluent_kafka import Consumer, KafkaException, Producer
+from confluent_kafka import Consumer, Producer
 from confluent_kafka.admin import AdminClient
 
 from dataenginex.core.interfaces import BaseConnector
@@ -66,6 +67,12 @@ class KafkaConnector(BaseConnector):
         group_id: str | None = None,
         timeout_seconds: float = 10.0,
         max_buffer: int = 1000,
+        spool_path: str | None = None,
+        dlq_path: str | None = None,
+        security_protocol: str = "PLAINTEXT",
+        sasl_mechanism: str = "PLAIN",
+        username: str = "",
+        password: str = "",
         **kwargs: Any,
     ) -> None:
         if mode not in ("produce", "consume"):
@@ -81,23 +88,122 @@ class KafkaConnector(BaseConnector):
         self._group_id = group_id
         self._timeout = timeout_seconds
         self._max_buffer = max_buffer
+        self._spool_path = Path(spool_path) if spool_path else None
+        self._dlq_path = Path(dlq_path) if dlq_path else None
+        self._security_protocol = security_protocol
+        self._sasl_mechanism = sasl_mechanism
+        self._username = username
+        self._password = password
         self._buffer: deque[dict[str, Any]] = deque()
+        self._inflight: dict[int, dict[str, Any]] = {}
+        self._next_delivery_id = 0
         self._producer: Producer | None = None
         self._consumer: Consumer | None = None
 
     def connect(self) -> None:
+        self._load_spool()
+        client_config: dict[str, Any] = {
+            "bootstrap.servers": self._bootstrap_servers,
+            "security.protocol": self._security_protocol,
+        }
+        if self._security_protocol.startswith("SASL"):
+            client_config.update(
+                {
+                    "sasl.mechanism": self._sasl_mechanism,
+                    "sasl.username": self._username,
+                    "sasl.password": self._password,
+                }
+            )
         if self._mode == "produce":
-            self._producer = Producer({"bootstrap.servers": self._bootstrap_servers})
+            self._producer = Producer(client_config)
         else:
             self._consumer = Consumer(
                 {
-                    "bootstrap.servers": self._bootstrap_servers,
+                    **client_config,
                     "group.id": self._group_id,
                     "auto.offset.reset": "latest",
                 }
             )
             self._consumer.subscribe([self._topic])
         logger.debug("kafka connector ready", topic=self._topic, mode=self._mode)
+
+    def _load_spool(self) -> None:
+        if self._spool_path is None or not self._spool_path.exists():
+            return
+        try:
+            for line in self._spool_path.read_text().splitlines():
+                if line.strip():
+                    self._buffer.append(json.loads(line))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("kafka spool could not be loaded", error=str(exc))
+
+    def _persist_spool(self) -> None:
+        if self._spool_path is None:
+            return
+        self._spool_path.parent.mkdir(parents=True, exist_ok=True)
+        pending = [*self._inflight.values(), *self._buffer]
+        payload = "".join(f"{json.dumps(record)}\n" for record in pending)
+        temp_path = self._spool_path.with_suffix(self._spool_path.suffix + ".tmp")
+        temp_path.write_text(payload)
+        temp_path.replace(self._spool_path)
+
+    def _dead_letter(self, record: dict[str, Any]) -> None:
+        if self._dlq_path is None:
+            return
+        self._dlq_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._dlq_path.open("a") as handle:
+            handle.write(f"{json.dumps(record)}\n")
+
+    def _delivery_callback(self, delivery_id: int, error: Any, _message: Any) -> None:
+        record = self._inflight.pop(delivery_id, None)
+        if record is None:
+            return
+        if error is not None:
+            self._buffer.appendleft(record)
+            logger.error(
+                "kafka delivery failed, record returned to local buffer",
+                topic=self._topic,
+                error=str(error),
+            )
+        self._persist_spool()
+
+    def _drain_buffer(self) -> None:
+        if self._producer is None or not self._buffer:
+            return
+        pending = list(self._buffer)
+        self._buffer.clear()
+        for index, record in enumerate(pending):
+            if len(self._inflight) >= self._max_buffer:
+                self._buffer.extend(pending[index:])
+                break
+            delivery_id = self._next_delivery_id
+            self._next_delivery_id += 1
+            self._inflight[delivery_id] = record
+
+            def on_delivery(
+                error: Any,
+                message: Any,
+                key: int = delivery_id,
+            ) -> None:
+                self._delivery_callback(key, error, message)
+
+            try:
+                self._producer.produce(
+                    self._topic,
+                    value=json.dumps(record).encode("utf-8"),
+                    on_delivery=on_delivery,
+                )
+                self._producer.poll(0)
+            except Exception as exc:  # noqa: BLE001
+                self._inflight.pop(delivery_id, None)
+                self._buffer.append(record)
+                self._buffer.extend(pending[index + 1 :])
+                logger.error(
+                    "kafka connector produce failed, record kept in local buffer",
+                    topic=self._topic,
+                    error=str(exc),
+                )
+                break
 
     def disconnect(self) -> None:
         if self._producer is not None:
@@ -112,6 +218,7 @@ class KafkaConnector(BaseConnector):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("kafka consumer close failed", error=str(exc))
             self._consumer = None
+        self._persist_spool()
 
     def write(self, data: Any, *, table: str = "", **kwargs: Any) -> None:
         """Fire-and-forget produce. Never blocks or raises on broker errors."""
@@ -124,26 +231,19 @@ class KafkaConnector(BaseConnector):
         records = data if isinstance(data, list) else [data]
 
         for record in records:
-            if len(self._buffer) >= self._max_buffer:
-                dropped = self._buffer.popleft()
+            if len(self._buffer) + len(self._inflight) >= self._max_buffer:
+                dropped = self._buffer.popleft() if self._buffer else record
+                self._dead_letter(dropped)
                 logger.warning(
                     "kafka connector local buffer full, dropping oldest record",
                     topic=self._topic,
                     dropped=dropped,
                 )
+                if dropped is record:
+                    continue
             self._buffer.append(record)
-
-            try:
-                self._producer.produce(self._topic, value=json.dumps(record).encode("utf-8"))
-                self._producer.poll(0)  # trigger delivery callbacks, non-blocking
-                self._buffer.popleft()
-            except (KafkaException, BufferError, Exception) as exc:  # noqa: BLE001
-                # Circuit breaker: broker down/slow must never crash the caller.
-                logger.error(
-                    "kafka connector produce failed, record kept in local buffer",
-                    topic=self._topic,
-                    error=str(exc),
-                )
+            self._drain_buffer()
+            self._persist_spool()
 
     def read(self, *, table: str | None = None, **kwargs: Any) -> list[dict[str, Any]]:
         """Poll available messages for up to timeout_seconds. Never raises on broker errors."""
@@ -176,7 +276,19 @@ class KafkaConnector(BaseConnector):
 
     def health_check(self) -> bool:
         try:
-            client = AdminClient({"bootstrap.servers": self._bootstrap_servers})
+            config: dict[str, Any] = {
+                "bootstrap.servers": self._bootstrap_servers,
+                "security.protocol": self._security_protocol,
+            }
+            if self._security_protocol.startswith("SASL"):
+                config.update(
+                    {
+                        "sasl.mechanism": self._sasl_mechanism,
+                        "sasl.username": self._username,
+                        "sasl.password": self._password,
+                    }
+                )
+            client = AdminClient(config)
             metadata = client.list_topics(timeout=self._timeout)
             return metadata is not None
         except Exception:

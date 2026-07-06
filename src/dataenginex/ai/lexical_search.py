@@ -69,12 +69,19 @@ class ElasticsearchBackend(LexicalSearchBackend):
         hosts: list[str],
         index_name: str,
         timeout_seconds: float = 5.0,
+        username: str = "",
+        password: str = "",
     ) -> None:
         self.index_name = index_name
         self.timeout_seconds = timeout_seconds
         from elasticsearch import Elasticsearch
 
-        self._client: Any = Elasticsearch(hosts, request_timeout=timeout_seconds)
+        auth = (username, password) if username and password else None
+        self._client: Any = Elasticsearch(
+            hosts,
+            request_timeout=timeout_seconds,
+            basic_auth=auth,
+        )
 
     def index(self, documents: list[Document]) -> int:
         """Bulk-index documents. Logs and skips (returns 0) on any ES error."""

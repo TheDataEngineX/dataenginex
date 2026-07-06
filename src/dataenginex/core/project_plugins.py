@@ -12,6 +12,7 @@ no return value is needed from it.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import structlog
@@ -41,10 +42,12 @@ def load_project_plugins(project_dir: Path) -> list[str]:
                 logger.warning("project plugin: could not load spec", path=str(py_file))
                 continue
             module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
             spec.loader.exec_module(module)
             loaded.append(module_name)
             logger.info("project plugin loaded", path=str(py_file))
         except Exception as exc:
+            sys.modules.pop(module_name, None)
             logger.error("project plugin failed to load", path=str(py_file), error=str(exc))
 
     return loaded

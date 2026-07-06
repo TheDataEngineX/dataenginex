@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -56,6 +57,35 @@ class TestKafkaConnectorProduce:
         assert len(conn._buffer) == 1
 
     @patch("dataenginex.data.connectors.kafka.Producer")
+    def test_async_delivery_failure_returns_record_to_durable_buffer(
+        self, mock_producer_cls: MagicMock, tmp_path: Path
+    ) -> None:
+        producer = MagicMock()
+        callbacks = []
+
+        def capture(_topic, *, value, on_delivery):
+            callbacks.append(on_delivery)
+
+        producer.produce.side_effect = capture
+        mock_producer_cls.return_value = producer
+        spool = tmp_path / "kafka.jsonl"
+        conn = KafkaConnector(
+            bootstrap_servers="localhost:9092",
+            topic="t",
+            mode="produce",
+            spool_path=str(spool),
+        )
+        conn.connect()
+        conn.write({"id": 8})
+
+        assert len(conn._inflight) == 1
+        callbacks[0]("broker rejected record", MagicMock())
+
+        assert list(conn._buffer) == [{"id": 8}]
+        assert conn._inflight == {}
+        assert json.loads(spool.read_text()) == {"id": 8}
+
+    @patch("dataenginex.data.connectors.kafka.Producer")
     def test_buffer_overflow_drops_oldest_without_blocking(self, mock_producer_cls) -> None:
         mock_producer = MagicMock()
         # Every produce() fails so records accumulate in the local buffer.
@@ -85,6 +115,50 @@ class TestKafkaConnectorProduce:
         )
         with pytest.raises(NotImplementedError):
             conn.write([{"id": 1}])
+
+    @patch("dataenginex.data.connectors.kafka.Producer")
+    def test_failed_records_survive_restart_in_spool(
+        self, mock_producer_cls: MagicMock, tmp_path: Path
+    ) -> None:
+        producer = MagicMock()
+        producer.produce.side_effect = Exception("broker down")
+        mock_producer_cls.return_value = producer
+        spool = tmp_path / "kafka.jsonl"
+
+        first = KafkaConnector(
+            bootstrap_servers="localhost:9092",
+            topic="t",
+            mode="produce",
+            spool_path=str(spool),
+        )
+        first.connect()
+        first.write({"id": 7})
+        first.disconnect()
+
+        second = KafkaConnector(
+            bootstrap_servers="localhost:9092",
+            topic="t",
+            mode="produce",
+            spool_path=str(spool),
+        )
+        second.connect()
+        assert list(second._buffer) == [{"id": 7}]
+
+    @patch("dataenginex.data.connectors.kafka.Producer")
+    def test_sasl_credentials_are_forwarded(self, mock_producer_cls: MagicMock) -> None:
+        connector = KafkaConnector(
+            bootstrap_servers="kafka:9092",
+            topic="t",
+            mode="produce",
+            security_protocol="SASL_PLAINTEXT",
+            username="dex",
+            password="secret",
+        )
+        connector.connect()
+
+        config = mock_producer_cls.call_args.args[0]
+        assert config["security.protocol"] == "SASL_PLAINTEXT"
+        assert config["sasl.username"] == "dex"
 
 
 class TestKafkaConnectorConsume:

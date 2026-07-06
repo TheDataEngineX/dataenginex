@@ -14,11 +14,14 @@ from __future__ import annotations
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
-from dataenginex.ml.training import SentenceTransformerFinetuneTrainer
+from dataenginex.ml.training import SentenceTransformerFinetuneTrainer, train_experiment
 
 
 class _FakeSentenceTransformer:
@@ -158,3 +161,38 @@ class TestSentenceTransformerFinetuneTrainer:
         trainer.train(self.PAIRS, self.LABELS)
         metrics = trainer.evaluate([], [])
         assert metrics == {"pairs_evaluated": 0.0}
+
+
+def test_train_experiment_dispatches_finetune_from_lakehouse(
+    mock_sentence_transformers: None,
+    tmp_path: Path,
+) -> None:
+    silver = tmp_path / ".dex" / "lakehouse" / "silver"
+    silver.mkdir(parents=True)
+    pq.write_table(
+        pa.table(
+            {
+                "left": ["space adventure", "romantic drama"],
+                "right": ["science fiction", "love story"],
+                "label": [0.9, 0.8],
+            }
+        ),
+        silver / "review_pairs.parquet",
+    )
+    experiment = SimpleNamespace(
+        model_type="sentence_transformer_finetune",
+        params={
+            "dataset_table": "review_pairs",
+            "text_a_column": "left",
+            "text_b_column": "right",
+            "label_column": "label",
+            "output_path": ".dex/models/review-similarity",
+            "epochs": 1,
+        },
+    )
+    config = SimpleNamespace(ml=SimpleNamespace(experiments={"review_similarity": experiment}))
+
+    metrics = train_experiment(config, "review_similarity", project_dir=tmp_path)
+
+    assert metrics["pairs_evaluated"] == 2.0
+    assert (tmp_path / ".dex/models/review-similarity/training_metadata.json").exists()

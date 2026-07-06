@@ -56,12 +56,18 @@ class RabbitMQQueue:
         host: str,
         queue_name: str,
         port: int = 5672,
+        username: str = "guest",
+        password: str = "guest",
+        virtual_host: str = "/",
         dlq_name: str | None = None,
         prefetch_count: int = 10,
         timeout_seconds: float = 10.0,
     ) -> None:
         self._host = host
         self._port = port
+        self._username = username
+        self._password = password
+        self._virtual_host = virtual_host
         self._queue_name = queue_name
         self._dlq_name = dlq_name
         self._prefetch_count = prefetch_count
@@ -71,6 +77,8 @@ class RabbitMQQueue:
         params = pika.ConnectionParameters(
             host=self._host,
             port=self._port,
+            virtual_host=self._virtual_host,
+            credentials=pika.PlainCredentials(self._username, self._password),
             blocked_connection_timeout=self._timeout,
             socket_timeout=self._timeout,
         )

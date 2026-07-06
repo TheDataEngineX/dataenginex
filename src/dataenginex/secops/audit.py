@@ -16,6 +16,7 @@ concurrently without races.  The previous DuckDB backend had an explicit
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import threading
 from dataclasses import dataclass, field
@@ -295,7 +296,5 @@ class AuditLogger:
         self._backend.close()
 
     def __del__(self) -> None:
-        import contextlib  # noqa: PLC0415
-
         with contextlib.suppress(Exception):
             self.close()

@@ -18,7 +18,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import structlog
 
@@ -796,9 +796,64 @@ class SentenceTransformerFinetuneTrainer(BaseTrainer):
         logger.info("sentence-transformer model loaded", name=self.model_name, path=path)
 
 
-def train_experiment(config: Any, experiment_name: str) -> dict[str, Any]:
+def _load_lakehouse_rows(project_dir: Path, table_name: str) -> list[dict[str, Any]]:
+    for layer in ("silver", "gold", "bronze"):
+        layer_dir = project_dir / ".dex" / "lakehouse" / layer
+        parquet_path = layer_dir / f"{table_name}.parquet"
+        if parquet_path.exists():
+            import pyarrow.parquet as pq
+
+            table = pq.read_table(parquet_path)  # type: ignore[no-untyped-call]
+            return cast(list[dict[str, Any]], table.to_pylist())
+        delta_path = layer_dir / table_name
+        if (delta_path / "_delta_log").exists():
+            from dataenginex.lakehouse.storage import DeltaStorage
+
+            return DeltaStorage(base_path=str(layer_dir)).read(table_name) or []
+    raise FileNotFoundError(f"Lakehouse table not found: {table_name}")
+
+
+def train_experiment(
+    config: Any,
+    experiment_name: str,
+    project_dir: str | Path | None = None,
+) -> dict[str, Any]:
     """Run a named experiment from dex.yaml and return metrics dict."""
     exp_cfg = config.ml.experiments[experiment_name]
-    trainer = SklearnTrainer(model_name=experiment_name)
-    result = trainer.train([], [], algorithm=getattr(exp_cfg, "algorithm", "auto"))
+    if exp_cfg.model_type == "sentence_transformer_finetune":
+        params = dict(exp_cfg.params)
+        table_name = str(params.pop("dataset_table"))
+        text_a = str(params.pop("text_a_column"))
+        text_b = str(params.pop("text_b_column"))
+        label = str(params.pop("label_column"))
+        output_path = Path(str(params.pop("output_path", f".dex/models/{experiment_name}")))
+        root = Path(project_dir or Path.cwd()).resolve()
+        rows = _load_lakehouse_rows(root, table_name)
+        pairs = [
+            (str(row[text_a]), str(row[text_b]))
+            for row in rows
+            if row.get(text_a) is not None
+            and row.get(text_b) is not None
+            and row.get(label) is not None
+        ]
+        labels = [
+            float(row[label])
+            for row in rows
+            if row.get(text_a) is not None
+            and row.get(text_b) is not None
+            and row.get(label) is not None
+        ]
+        sentence_trainer = SentenceTransformerFinetuneTrainer(
+            experiment_name,
+            base_model=str(params.pop("base_model", "all-MiniLM-L6-v2")),
+            loss_type=str(params.pop("loss_type", "contrastive")),
+            epochs=int(params.pop("epochs", 3)),
+            batch_size=int(params.pop("batch_size", 16)),
+            warmup_steps=int(params.pop("warmup_steps", 100)),
+        )
+        result = sentence_trainer.train(pairs, labels)
+        sentence_trainer.save(str(output_path if output_path.is_absolute() else root / output_path))
+        return result.metrics
+    sklearn_trainer = SklearnTrainer(model_name=experiment_name)
+    result = sklearn_trainer.train([], [], algorithm=getattr(exp_cfg, "algorithm", "auto"))
     return result.metrics

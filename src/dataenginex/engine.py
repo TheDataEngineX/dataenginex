@@ -158,6 +158,14 @@ class DexEngine:
         # Lakehouse catalog — shares the same SQLite store; eliminates split-brain
         self.catalog = DataCatalog(store=self.store)
 
+        # Plugin discovery must precede subsystem construction so project-local
+        # connector/transform registrations are available to the pipeline runner.
+        self.plugins = PluginRegistry()
+        self._load_plugins()
+        from dataenginex.core.project_plugins import load_project_plugins
+
+        load_project_plugins(self.project_dir)
+
         # ML backends — init before pipeline runner so feature_store is available
         self.tracker: Any = self._init_ml_tracker()
         self.feature_store: Any = self._init_ml_feature_store()
@@ -167,6 +175,10 @@ class DexEngine:
         self._vector_store: Any = None
         self._embed_fn: Any = None
         self._vector_store, self._embed_fn = self._init_vector_store()
+        self._lexical_backends: dict[str, Any] = self._init_lexical_backends()
+        self._lexical_backend: Any = self._lexical_backends.get("movies")
+        if self._lexical_backend is None and self._lexical_backends:
+            self._lexical_backend = next(iter(self._lexical_backends.values()))
 
         # Data pipeline runner — has access to feature store + vector store
         from dataenginex.data.pipeline.runner import PipelineRunner
@@ -179,6 +191,8 @@ class DexEngine:
             feature_store=self.feature_store,
             vector_store=self._vector_store,
             embed_fn=self._embed_fn,
+            lexical_backend=self._lexical_backend,
+            lexical_backends=self._lexical_backends,
         )
 
         # AI backends — ingest existing lakehouse into vector store, init agents
@@ -200,17 +214,6 @@ class DexEngine:
         # always available, then wire it into the router inside the AI init.
         self._init_privacy_guard()
         self._init_ai_layer()
-
-        # Plugin discovery
-        self.plugins = PluginRegistry()
-        self._load_plugins()
-
-        # Project-local plugins (connectors/transforms defined by this
-        # project itself, e.g. moviedex's TmdbConnector) — separate from
-        # the installed-package plugin system above.
-        from dataenginex.core.project_plugins import load_project_plugins
-
-        load_project_plugins(self.project_dir)
 
         logger.info(
             "DexEngine ready",
@@ -277,15 +280,23 @@ class DexEngine:
         pipeline_cfg = self.config.data.pipelines.get(name)
         if pipeline_cfg and pipeline_cfg.destination and result.success:
             target_layer = (pipeline_cfg.target or {}).get("layer", "silver")
+            target_format = (pipeline_cfg.target or {}).get("format", "parquet")
             table_path = (
-                self._dex_dir / "lakehouse" / target_layer / f"{pipeline_cfg.destination}.parquet"
+                self._dex_dir
+                / "lakehouse"
+                / target_layer
+                / (
+                    f"{pipeline_cfg.destination}.parquet"
+                    if target_format == "parquet"
+                    else pipeline_cfg.destination
+                )
             )
             if table_path.exists():
                 self.catalog.register(
                     LakehouseCatalogEntry(
                         name=pipeline_cfg.destination,
                         layer=target_layer,
-                        format="parquet",
+                        format=target_format,
                         location=str(table_path),
                         record_count=result.rows_output,
                     )
@@ -415,7 +426,15 @@ class DexEngine:
         for layer_name in ("bronze", "silver", "gold"):
             layer_path = lakehouse / layer_name
             pq = self._SOURCE_EXT_MAP["parquet"]
-            table_count = len(list(layer_path.glob(pq))) if layer_path.exists() else 0
+            if layer_path.exists():
+                delta_count = sum(
+                    1
+                    for path in layer_path.iterdir()
+                    if path.is_dir() and (path / "_delta_log").exists()
+                )
+                table_count = len(list(layer_path.glob(pq))) + delta_count
+            else:
+                table_count = 0
             layers.append({"name": layer_name, "table_count": table_count})
         return layers
 
@@ -426,10 +445,20 @@ class DexEngine:
         if not layer_path.exists():
             return []
         tables: list[dict[str, Any]] = []
-        for f in sorted(layer_path.glob(self._SOURCE_EXT_MAP["parquet"])):
+        parquet_tables = sorted(layer_path.glob(self._SOURCE_EXT_MAP["parquet"]))
+        delta_tables = sorted(
+            path
+            for path in layer_path.iterdir()
+            if path.is_dir() and (path / "_delta_log").exists()
+        )
+        for f in [*parquet_tables, *delta_tables]:
             try:
                 stat = f.stat()
-                size_bytes = stat.st_size
+                size_bytes = (
+                    stat.st_size
+                    if f.is_file()
+                    else sum(p.stat().st_size for p in f.rglob("*") if p.is_file())
+                )
                 size = (
                     f"{size_bytes / 1024:.1f} KB"
                     if size_bytes < 1_048_576
@@ -437,16 +466,27 @@ class DexEngine:
                 )
                 updated_at = datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%b %d %H:%M")
                 row_count: int | None = None
-                with contextlib.suppress(Exception), self._duckdb_ro() as conn:
-                    row = conn.execute(f"SELECT COUNT(*) FROM read_parquet('{f}')").fetchone()
-                    row_count = int(row[0]) if row else None
+                table_format = "parquet" if f.is_file() else "delta"
+                with contextlib.suppress(Exception):
+                    if table_format == "parquet":
+                        with self._duckdb_ro() as conn:
+                            row = conn.execute(
+                                f"SELECT COUNT(*) FROM read_parquet('{f}')"
+                            ).fetchone()
+                            row_count = int(row[0]) if row else None
+                    else:
+                        with self._duckdb_ro() as conn:
+                            row = conn.execute(
+                                f"SELECT COUNT(*) FROM {self._lakehouse_scan_sql(f, table_format)}"
+                            ).fetchone()
+                            row_count = int(row[0]) if row else None
 
                 # Register/refresh in catalog
                 self.catalog.register(
                     LakehouseCatalogEntry(
                         name=f.stem,
                         layer=layer,
-                        format="parquet",
+                        format=table_format,
                         location=str(f),
                         record_count=row_count or 0,
                     )
@@ -459,19 +499,36 @@ class DexEngine:
                         "size": size,
                         "row_count": row_count,
                         "updated_at": updated_at,
+                        "format": table_format,
                     }
                 )
             except OSError:
                 continue
         return tables
 
+    def _lakehouse_table_location(self, table_name: str, layer: str) -> tuple[Path, str]:
+        layer_path = self._dex_dir / "lakehouse" / layer
+        parquet_path = layer_path / f"{table_name}.parquet"
+        if parquet_path.exists():
+            return parquet_path, "parquet"
+        return layer_path / table_name, "delta"
+
+    def _lakehouse_scan_sql(self, table_path: Path, table_format: str) -> str:
+        if table_format == "parquet":
+            safe_path = str(table_path).replace("'", "''")
+            return f"read_parquet('{safe_path}')"
+        from dataenginex.lakehouse.storage import DeltaStorage
+
+        return DeltaStorage(base_path=str(table_path.parent)).parquet_scan_sql(table_path.name)
+
     def warehouse_table_schema(self, table_name: str, layer: str) -> list[dict[str, Any]]:
-        table_path = self._dex_dir / "lakehouse" / layer / f"{table_name}.parquet"
+        table_path, table_format = self._lakehouse_table_location(table_name, layer)
         if not table_path.exists():
             return []
         try:
             with self._duckdb_ro() as conn:
-                conn.execute(f"CREATE VIEW IF NOT EXISTS _wts AS SELECT * FROM '{table_path}'")
+                scan = self._lakehouse_scan_sql(table_path, table_format)
+                conn.execute(f"CREATE VIEW IF NOT EXISTS _wts AS SELECT * FROM {scan}")
                 cols = conn.execute("DESCRIBE _wts").fetchall()
                 conn.execute("DROP VIEW IF EXISTS _wts")
                 return [{"name": r[0], "dtype": r[1], "nullable": r[2] == "YES"} for r in cols]
@@ -480,17 +537,26 @@ class DexEngine:
             return []
 
     def warehouse_table_stats(self, table_name: str, layer: str) -> dict[str, Any]:
-        table_path = self._dex_dir / "lakehouse" / layer / f"{table_name}.parquet"
+        table_path, table_format = self._lakehouse_table_location(table_name, layer)
         if not table_path.exists():
             return {}
-        size = table_path.stat().st_size
+        size = (
+            table_path.stat().st_size
+            if table_path.is_file()
+            else sum(p.stat().st_size for p in table_path.rglob("*") if p.is_file())
+        )
         schema = self.warehouse_table_schema(table_name, layer)
         row_count = None
         with contextlib.suppress(Exception), self._duckdb_ro() as conn:
-            row_count = conn.execute(
-                f"SELECT COUNT(*) FROM read_parquet('{table_path}')"
-            ).fetchone()[0]
-        return {"size_bytes": size, "column_count": len(schema), "row_count": row_count}
+            scan = self._lakehouse_scan_sql(table_path, table_format)
+            result = conn.execute(f"SELECT COUNT(*) FROM {scan}").fetchone()
+            row_count = result[0] if result else None
+        return {
+            "size_bytes": size,
+            "column_count": len(schema),
+            "row_count": row_count,
+            "format": table_format,
+        }
 
     def warehouse_table_lineage(self, table_name: str, layer: str) -> dict[str, Any]:
         upstream: list[dict[str, Any]] = []
@@ -646,12 +712,13 @@ class DexEngine:
         layer, _, tbl = table_name.partition(".")
         if not layer or not tbl:
             return None
-        table_path = self._dex_dir / "lakehouse" / layer / f"{tbl}.parquet"
+        table_path, table_format = self._lakehouse_table_location(tbl, layer)
         if not table_path.exists():
             return None
         try:
             with self._duckdb_ro() as conn:
-                conn.execute(f"CREATE VIEW IF NOT EXISTS _qc AS SELECT * FROM '{table_path}'")
+                scan = self._lakehouse_scan_sql(table_path, table_format)
+                conn.execute(f"CREATE VIEW IF NOT EXISTS _qc AS SELECT * FROM {scan}")
                 col_result = conn.execute("DESCRIBE _qc").fetchall()
                 column_names = [r[0] for r in col_result]
                 column_specs = [
@@ -863,6 +930,41 @@ class DexEngine:
             logger.warning("vector store init failed")
         return vector_store, embed_fn
 
+    def _init_lexical_backends(self) -> dict[str, Any]:
+        lexical = self.config.ai.retrieval.options.get("lexical", {})
+        if not isinstance(lexical, dict) or lexical.get("backend") != "elasticsearch":
+            return {}
+        try:
+            from dataenginex.ai.lexical_search import ElasticsearchBackend
+
+            indices = lexical.get("indices", {})
+            hosts = lexical.get("hosts", ["http://localhost:9200"])
+            configured = (
+                indices
+                if isinstance(indices, dict) and indices
+                else {"movies": {"index_name": "dex_documents"}}
+            )
+            return {
+                name: ElasticsearchBackend(
+                    hosts=list(hosts),
+                    index_name=str(
+                        cfg.get("index_name", f"dex_{name}")
+                        if isinstance(cfg, dict)
+                        else f"dex_{name}"
+                    ),
+                    timeout_seconds=float(lexical.get("timeout_seconds", 5.0)),
+                    username=str(lexical.get("username", "")),
+                    password=str(lexical.get("password", "")),
+                )
+                for name, cfg in configured.items()
+            }
+        except Exception as exc:
+            logger.warning(
+                "lexical backend init failed; using vector-only retrieval",
+                error=str(exc),
+            )
+            return {}
+
     def _ingest_lakehouse_to_vector_store(self) -> None:
         """Embed and index gold/silver tables into the vector store on startup."""
         if self._vector_store is None:
@@ -895,24 +997,61 @@ class DexEngine:
                         ).fetchall()
                         conn.close()
                         cols = [d[0] for d in desc]
-                        docs: list[Document] = []
-                        for row in rows:
-                            record = dict(zip(cols, row, strict=True))
-                            text = " | ".join(
-                                f"{k}: {v}" for k, v in record.items() if v is not None
-                            )[:512]
-                            docs.append(
-                                Document(
-                                    text=text,
-                                    metadata={"table": pf.stem, "layer": layer},
-                                )
-                            )
-                        if docs:
-                            rag.store.upsert(docs)
-                            ingested += len(docs)
+                        records = [dict(zip(cols, row, strict=True)) for row in rows]
+                        ingested += self._index_lakehouse_records(
+                            rag, Document, records, pf.stem, layer
+                        )
+                for delta_dir in sorted(path for path in layer_dir.iterdir() if path.is_dir()):
+                    if not (delta_dir / "_delta_log").exists():
+                        continue
+                    with contextlib.suppress(Exception):
+                        import duckdb
+
+                        conn = duckdb.connect(":memory:")
+                        scan = self._lakehouse_scan_sql(delta_dir, "delta")
+                        cursor = conn.execute(f"SELECT * FROM {scan} LIMIT 5000")
+                        columns = [desc[0] for desc in (cursor.description or [])]
+                        rows = cursor.fetchall()
+                        conn.close()
+                        records = [dict(zip(columns, row, strict=True)) for row in rows]
+                        ingested += self._index_lakehouse_records(
+                            rag, Document, records, delta_dir.name, layer
+                        )
             logger.info("vector store populated", documents=ingested)
         except Exception as exc:
             logger.warning("vector store ingest failed", error=str(exc))
+
+    def _index_lakehouse_records(
+        self,
+        rag: Any,
+        document_cls: Any,
+        records: list[dict[str, Any]],
+        table_name: str,
+        layer: str,
+    ) -> int:
+        docs = [
+            document_cls(
+                text=" | ".join(
+                    f"{key}: {value}" for key, value in record.items() if value is not None
+                )[:512],
+                metadata={"table": table_name, "layer": layer},
+            )
+            for record in records
+        ]
+        if not docs:
+            return 0
+        rag.store.upsert(docs)
+        lexical_name = (
+            "reviews"
+            if "review" in table_name
+            else "keywords"
+            if "keyword" in table_name
+            else "movies"
+        )
+        lexical = self._lexical_backends.get(lexical_name, self._lexical_backend)
+        if lexical is not None:
+            lexical.index(docs)
+        return len(docs)
 
     def _init_ai(self) -> None:
         try:
@@ -933,6 +1072,7 @@ class DexEngine:
                 models_dir=self._dex_dir / "models",
                 vector_store=self._vector_store,
                 embed_fn=self._embed_fn,
+                lexical_backend=self._lexical_backend,
             )
         except Exception:
             logger.warning("tool registration failed")

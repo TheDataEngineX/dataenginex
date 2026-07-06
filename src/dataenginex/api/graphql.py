@@ -65,15 +65,25 @@ class GoldTable:
 
 
 def _table_path(engine: Any, table: str, layer: str) -> Path:
-    return Path(engine.project_dir) / ".dex" / "lakehouse" / layer / f"{table}.parquet"
+    layer_path = Path(engine.project_dir) / ".dex" / "lakehouse" / layer
+    parquet_path = layer_path / f"{table}.parquet"
+    return parquet_path if parquet_path.exists() else layer_path / table
 
 
 def _query_rows(path: Path, id_column: str, id_value: str | None) -> list[dict[str, Any]]:
     with duckdb.connect(":memory:") as conn:
-        sql = f"SELECT * FROM read_parquet('{path}')"
+        if path.is_dir() and (path / "_delta_log").exists():
+            from dataenginex.lakehouse.storage import DeltaStorage
+
+            scan = DeltaStorage(base_path=str(path.parent)).parquet_scan_sql(path.name)
+            sql = f"SELECT * FROM {scan}"
+        else:
+            safe_path = str(path).replace("'", "''")
+            sql = f"SELECT * FROM read_parquet('{safe_path}')"
         params: list[Any] = []
         if id_value is not None:
-            sql += f" WHERE {id_column} = ?"
+            safe_id_column = id_column.replace('"', '""')
+            sql += f' WHERE CAST("{safe_id_column}" AS VARCHAR) = ?'
             params.append(id_value)
         cursor = conn.execute(sql, params)
         columns = [d[0] for d in cursor.description] if cursor.description else []
@@ -111,8 +121,14 @@ def build_schema(
         if not schema_cols:
             continue
 
-        id_column = cfg.id_column or schema_cols[0]["column_name"]
-        row_fields = [(c["column_name"], _py_type(c["column_type"])) for c in schema_cols]
+        def _column_name(column: dict[str, Any]) -> str:
+            return str(column.get("column_name", column.get("name", "")))
+
+        def _column_type(column: dict[str, Any]) -> str:
+            return str(column.get("column_type", column.get("dtype", "VARCHAR")))
+
+        id_column = cfg.id_column or _column_name(schema_cols[0])
+        row_fields = [(_column_name(c), _py_type(_column_type(c))) for c in schema_cols]
         row_type = strawberry.type(dataclasses.make_dataclass(type_name, row_fields))
         path = _table_path(engine, cfg.table, table_layer)
         # Query root field uses lowerCamel-ish convention (type "Movie" -> field "movie");

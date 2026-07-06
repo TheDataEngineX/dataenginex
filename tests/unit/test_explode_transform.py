@@ -5,7 +5,7 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from dataenginex.data.transforms.sql import ExplodeTransform
+from dataenginex.data.transforms.sql import ExplodeTransform, JsonNormalizeTransform
 
 
 @pytest.fixture
@@ -72,3 +72,29 @@ def test_explode_handles_nested_struct_field_path(conn: duckdb.DuckDBPyConnectio
     cols = [r[0] for r in conn.execute(f"DESCRIBE {output}").fetchall()]
     assert "credits" not in cols
     assert "cast_member" in cols
+
+
+def test_explode_rejects_non_list_input(conn: duckdb.DuckDBPyConnection) -> None:
+    conn.execute("CREATE TABLE malformed(movie_id INTEGER, credits VARCHAR)")
+    transform = ExplodeTransform(column="credits")
+
+    with pytest.raises(ValueError, match="must be a LIST"):
+        transform.apply(conn, "malformed")
+
+
+def test_json_normalize_flattens_struct(conn: duckdb.DuckDBPyConnection) -> None:
+    conn.execute(
+        "CREATE TABLE movies AS SELECT "
+        "1 AS id, {'imdb_id': 'tt1', 'wikidata_id': 'Q1'} AS external_ids"
+    )
+    transform = JsonNormalizeTransform(column="external_ids", prefix="external_")
+
+    output = transform.apply(conn, "movies")
+
+    assert conn.execute(
+        f"SELECT id, external_imdb_id, external_wikidata_id FROM {output}"
+    ).fetchall() == [(1, "tt1", "Q1")]
+
+
+def test_json_normalize_validate_rejects_empty_column() -> None:
+    assert JsonNormalizeTransform(column="").validate() == ["json_normalize requires a column name"]

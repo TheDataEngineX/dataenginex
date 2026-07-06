@@ -130,6 +130,7 @@ class PipelineRunner:
         feature_store: Optional feature store — gold tables are saved as feature groups.
         vector_store: Optional vector store — gold/silver rows are embedded on completion.
         embed_fn: Embedding callable for vector store ingest.
+        lexical_backend: Optional lexical backend indexed alongside the vector store.
     """
 
     def __init__(
@@ -141,6 +142,8 @@ class PipelineRunner:
         feature_store: Any = None,
         vector_store: Any = None,
         embed_fn: Any = None,
+        lexical_backend: Any = None,
+        lexical_backends: dict[str, Any] | None = None,
     ) -> None:
         self._config = config
         self._data_dir = data_dir or Path(".dex/lakehouse")
@@ -150,6 +153,8 @@ class PipelineRunner:
         self._feature_store = feature_store
         self._vector_store = vector_store
         self._embed_fn = embed_fn
+        self._lexical_backend = lexical_backend
+        self._lexical_backends = lexical_backends or {}
         # Temp directory for DuckDB spill-to-disk — prevents OOM on large datasets
         self._tmp_dir = (self._data_dir.parent / "tmp" / "duckdb").resolve()
         self._tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -304,6 +309,8 @@ class PipelineRunner:
         self._check_quality(conn, name, cfg, current_table, log)
         rows_output = self._load(conn, name, cfg, current_table, log)
         self._post_load_hooks(conn, name, cfg, current_table, log)
+        self._persist_entity_matches(conn, cfg, current_table, log)
+        self._publish_outputs(conn, cfg, current_table, log)
 
         return PipelineResult(
             pipeline=name,
@@ -338,8 +345,8 @@ class PipelineRunner:
                 if not _is_delta_table(dd):
                     continue
                 with contextlib.suppress(Exception):
-                    records = DeltaStorage(base_path=str(layer_dir)).read(dd.name)
-                    conn.register(dd.name, pa.Table.from_pylist(records or []))
+                    scan = DeltaStorage(base_path=str(layer_dir)).parquet_scan_sql(dd.name)
+                    conn.execute(f'CREATE OR REPLACE VIEW "{dd.name}" AS SELECT * FROM {scan}')
         log.debug("lakehouse views registered")
 
     def _extract(
@@ -389,6 +396,7 @@ class PipelineRunner:
             **dict(source_config.connection),
             **dict(source_config.options),
         }
+        connector_kwargs = self._resolve_connector_paths(connector_kwargs)
         if source_config.path and "path" not in connector_kwargs:
             src_path = source_config.path
             if self._project_dir and not Path(src_path).is_absolute():
@@ -398,10 +406,12 @@ class PipelineRunner:
             connector_kwargs["url"] = source_config.url
 
         connector = connector_cls(**connector_kwargs)
-        connector.connect()
-        read_table = connector_kwargs.get("default_file", cfg.source)
-        raw_data = connector.read(table=read_table)
-        connector.disconnect()
+        try:
+            connector.connect()
+            read_table = str(connector_kwargs.get("default_file", ""))
+            raw_data = connector.read(table=read_table)
+        finally:
+            connector.disconnect()
 
         # Connectors may return a pa.Table (e.g. HttpConnector) to avoid the
         # cost of converting 10M+ rows through Python dicts.
@@ -430,6 +440,20 @@ class PipelineRunner:
                 step_name="extract",
             )
         return rows
+
+    def _resolve_connector_paths(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        if self._project_dir is None:
+            return kwargs
+        resolved = dict(kwargs)
+        for key, value in resolved.items():
+            if (
+                key.endswith("_path")
+                and isinstance(value, str)
+                and value
+                and not Path(value).is_absolute()
+            ):
+                resolved[key] = str((self._project_dir / value).resolve())
+        return resolved
 
     def _find_lakehouse_output(self, source_name: str) -> tuple[Path | None, Path | None]:
         """Locate a pipeline's lakehouse output, Parquet file or Delta directory.
@@ -477,9 +501,14 @@ class PipelineRunner:
         else:
             assert delta_dir is not None  # narrowed by the guard above
             found_path = delta_dir
-            records = DeltaStorage(base_path=str(delta_dir.parent)).read(delta_dir.name)
-            conn.register("_delta_src", pa.Table.from_pylist(records or []))
-            conn.execute("CREATE OR REPLACE TABLE bronze AS SELECT * FROM _delta_src")
+            try:
+                scan = DeltaStorage(base_path=str(delta_dir.parent)).parquet_scan_sql(
+                    delta_dir.name
+                )
+            except FileNotFoundError:
+                msg = f"Delta source '{source_name}' has no active Parquet files"
+                raise PipelineStepError(step="extract", cause=msg, pipeline=name) from None
+            conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * FROM {scan}")
 
         row = conn.execute("SELECT COUNT(*) FROM bronze").fetchone()
         rows = int(row[0]) if row else 0
@@ -771,4 +800,94 @@ class PipelineRunner:
                     dimension=384,
                 )
                 rag.store.upsert(docs)
+                lexical_name = (
+                    "reviews" if "review" in name else "keywords" if "keyword" in name else "movies"
+                )
+                lexical = self._lexical_backends.get(lexical_name, self._lexical_backend)
+                if lexical is not None:
+                    lexical.index(docs)
                 log.info("vector store updated", table=name, documents=len(docs))
+
+    def _publish_outputs(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        cfg: PipelineConfig,
+        table: str,
+        log: Any,
+    ) -> None:
+        """Publish transformed rows to configured connector sinks without blocking the pipeline."""
+        if not cfg.publish_to:
+            return
+        cursor = conn.execute(f"SELECT * FROM {table}")  # noqa: S608
+        rows = cursor.fetchall()
+        columns = [desc[0] for desc in (cursor.description or [])]
+        records = [dict(zip(columns, row, strict=True)) for row in rows]
+        for sink_name in cfg.publish_to:
+            try:
+                source = self._config.data.sources[sink_name]
+                connector_cls = connector_registry.get(source.type)
+                kwargs = self._resolve_connector_paths(
+                    {**dict(source.connection), **dict(source.options)}
+                )
+                connector = connector_cls(**kwargs)
+                connector.connect()
+                try:
+                    connector.write(records, table=cfg.destination or "")
+                finally:
+                    connector.disconnect()
+                log.info("pipeline output published", sink=sink_name, rows=len(records))
+            except Exception as exc:  # noqa: BLE001 - an optional sink cannot fail core load
+                log.warning("pipeline output publish skipped", sink=sink_name, error=str(exc))
+
+    def _persist_entity_matches(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        cfg: PipelineConfig,
+        table: str,
+        log: Any,
+    ) -> None:
+        """Persist a configured entity-resolution result through the generic ORM model."""
+        mapping = cfg.orm_sink
+        if not mapping or mapping.get("model") != "entity_resolution_match":
+            return
+        try:
+            from datetime import UTC, datetime
+
+            from dataenginex.orm import (
+                EntityResolutionMatch,
+                create_all,
+                get_engine,
+                get_session,
+            )
+
+            source_a = mapping["source_a_id"]
+            source_b = mapping["source_b_id"]
+            confidence = mapping["confidence"]
+            rows = conn.execute(
+                f'SELECT "{source_a}", "{source_b}", "{confidence}" FROM {table}'  # noqa: S608
+            ).fetchall()
+            db_path = (
+                Path(mapping["db_path"])
+                if mapping.get("db_path")
+                else (self._project_dir or Path.cwd()) / ".dex" / "orm.db"
+            )
+            if not db_path.is_absolute():
+                db_path = (self._project_dir or Path.cwd()) / db_path
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            engine = get_engine(f"sqlite:///{db_path}")
+            create_all(engine)
+            with get_session(engine) as session:
+                for row in rows:
+                    session.merge(
+                        EntityResolutionMatch(
+                            source_a_id=str(row[0]),
+                            source_b_id=str(row[1]),
+                            match_confidence=float(row[2]),
+                            resolved_at=datetime.now(UTC),
+                        )
+                    )
+                session.commit()
+            engine.dispose()
+            log.info("entity matches persisted", rows=len(rows), path=str(db_path))
+        except Exception as exc:  # noqa: BLE001 - secondary persistence cannot lose lakehouse load
+            log.warning("entity match ORM persistence skipped", error=str(exc))

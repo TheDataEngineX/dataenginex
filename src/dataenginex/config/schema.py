@@ -99,6 +99,8 @@ class PipelineConfig(FrozenModel):
     destination: str | None = None
     target: dict[str, str] | None = None  # {layer: "silver", format: "parquet"|"delta"}
     depends_on: list[str] = Field(default_factory=list)
+    publish_to: list[str] = Field(default_factory=list)
+    orm_sink: dict[str, str] | None = None
     schedule: str | None = None  # cron expression
 
 

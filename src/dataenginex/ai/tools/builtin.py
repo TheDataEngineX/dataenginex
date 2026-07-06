@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 # Names available after register_builtin_tools() — used by the config validator.
 BUILTIN_TOOL_NAMES: frozenset[str] = frozenset(
-    {"query", "list_tools", "echo", "predict", "search_similar"}
+    {"query", "list_tools", "echo", "predict", "search_similar", "rag_search"}
 )
 
 logger = structlog.get_logger()
@@ -64,7 +64,7 @@ def _query_sql(sql: str, database: str = ":memory:") -> list[dict[str, Any]]:
 
 
 def _make_lakehouse_query(lakehouse_dir: Path) -> Callable[[str], list[dict[str, Any]]]:
-    """Return a query function that pre-registers all lakehouse parquet files as views."""
+    """Return a query function that pre-registers Parquet and Delta tables as views."""
 
     def _query_with_lakehouse(sql: str) -> list[dict[str, Any]]:
         import duckdb
@@ -82,6 +82,18 @@ def _make_lakehouse_query(lakehouse_dir: Path) -> Callable[[str], list[dict[str,
                         conn.execute(
                             f"CREATE OR REPLACE VIEW {pf.stem}"
                             f" AS SELECT * FROM read_parquet('{safe}')"
+                        )
+                for delta_dir in sorted(path for path in layer_path.iterdir() if path.is_dir()):
+                    if not (delta_dir / "_delta_log").exists():
+                        continue
+                    with contextlib.suppress(Exception):
+                        from dataenginex.lakehouse.storage import DeltaStorage
+
+                        scan = DeltaStorage(base_path=str(layer_path)).parquet_scan_sql(
+                            delta_dir.name
+                        )
+                        conn.execute(
+                            f'CREATE OR REPLACE VIEW "{delta_dir.name}" AS SELECT * FROM {scan}'
                         )
             # Lock the connection down to the views already registered above —
             # untrusted `sql` below can no longer touch the filesystem/network.
@@ -160,15 +172,37 @@ def _make_predict(
 def _make_search_similar(
     vector_store: Any,
     embed_fn: Any | None = None,
+    lexical_backend: Any = None,
 ) -> Callable[..., list[dict[str, Any]]]:
-    """Return a semantic search function backed by the shared vector store."""
+    """Return hybrid search backed by the vector store and optional lexical backend."""
 
     def _search_similar(query: str, top_k: int = 5) -> list[dict[str, Any]]:
         try:
-            from dataenginex.ai.vectorstore import RAGPipeline
+            from dataenginex.ai.vectorstore import RAGPipeline, SearchResult
 
             rag = RAGPipeline(store=vector_store, embed_fn=embed_fn, dimension=384)
-            results = rag.query(query, top_k=top_k)
+            dense_results = rag.query(query, top_k=top_k * 2)
+            lexical_results = (
+                lexical_backend.search(query, top_k=top_k * 2)
+                if lexical_backend is not None and lexical_backend.health_check()
+                else []
+            )
+            if lexical_results:
+                by_id: dict[str, Any] = {}
+                scores: dict[str, float] = {}
+                for ranking in (dense_results, lexical_results):
+                    for rank, result in enumerate(ranking):
+                        doc_id = result.document.id
+                        by_id[doc_id] = result.document
+                        scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (60 + rank + 1)
+                ranked = sorted(scores, key=lambda doc_id: scores[doc_id], reverse=True)[:top_k]
+                results = [
+                    SearchResult(document=by_id[doc_id], score=scores[doc_id]) for doc_id in ranked
+                ]
+                method = "hybrid"
+            else:
+                results = dense_results[:top_k]
+                method = "dense"
             if not results:
                 return [{"info": "Vector store is empty — run a gold pipeline to populate it."}]
             return [
@@ -176,6 +210,7 @@ def _make_search_similar(
                     "id": r.document.id,
                     "text": r.document.text,
                     "score": round(r.score, 4),
+                    "method": method,
                     **r.document.metadata,
                 }
                 for r in results
@@ -205,6 +240,7 @@ def register_builtin_tools(
     models_dir: Path | None = None,
     vector_store: Any = None,
     embed_fn: Any | None = None,
+    lexical_backend: Any = None,
 ) -> None:
     """Register all built-in tools.
 
@@ -267,18 +303,26 @@ def register_builtin_tools(
         )
 
     if vector_store is not None:
-        search_fn = _make_search_similar(vector_store, embed_fn)
-        builtins.append(
-            ToolSpec(
-                name="search_similar",
-                description=(
-                    "Semantic similarity search over the movie catalog. "
-                    "Finds movies similar to a natural-language query. "
-                    "Args: query (str), top_k (int, default 5)."
+        search_fn = _make_search_similar(vector_store, embed_fn, lexical_backend)
+        builtins.extend(
+            [
+                ToolSpec(
+                    name="search_similar",
+                    description=(
+                        "Semantic similarity search over the movie catalog. "
+                        "Finds movies similar to a natural-language query. "
+                        "Args: query (str), top_k (int, default 5)."
+                    ),
+                    fn=search_fn,
+                    parameters={"query": "str", "top_k": "int (optional, default 5)"},
                 ),
-                fn=search_fn,
-                parameters={"query": "str", "top_k": "int (optional, default 5)"},
-            )
+                ToolSpec(
+                    name="rag_search",
+                    description="RAG search over the indexed lakehouse documents.",
+                    fn=search_fn,
+                    parameters={"query": "str", "top_k": "int (optional, default 5)"},
+                ),
+            ]
         )
 
     for spec in builtins:

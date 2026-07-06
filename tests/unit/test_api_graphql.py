@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from dataenginex.api.graphql import GoldTable, build_schema
+from dataenginex.lakehouse.storage import DeltaStorage
 
 
 class _FakeEngine:
@@ -97,3 +98,29 @@ def test_generic_helper_knows_nothing_about_table_semantics(engine: _FakeEngine)
     result = schema.execute_sync('{ anything(id: "gamma") { widgetId score } }')
     assert result.errors is None
     assert result.data["anything"] == [{"widgetId": 3, "score": 3.5}]
+
+
+def test_reads_delta_table(tmp_path: Path) -> None:
+    gold = tmp_path / ".dex" / "lakehouse" / "gold"
+    gold.mkdir(parents=True)
+    assert DeltaStorage(base_path=str(gold)).write(
+        [{"movie_id": 1, "title": "Delta Movie"}],
+        "movies",
+    )
+
+    class _DeltaEngine:
+        project_dir = tmp_path
+
+        def warehouse_table_schema(self, table_name: str, layer: str) -> list[dict[str, Any]]:
+            return [
+                {"name": "movie_id", "dtype": "BIGINT", "nullable": False},
+                {"name": "title", "dtype": "VARCHAR", "nullable": True},
+            ]
+
+    schema = build_schema(
+        _DeltaEngine(),
+        {"Movie": GoldTable(table="movies", id_column="movie_id")},
+    )
+    result = schema.execute_sync('{ movie(id: "1") { movieId title } }')
+    assert result.errors is None
+    assert result.data == {"movie": [{"movieId": 1, "title": "Delta Movie"}]}

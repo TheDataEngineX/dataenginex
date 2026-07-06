@@ -344,6 +344,32 @@ class DeltaStorage(StorageBackend):
             logger.error("delta storage read failed", exc=str(exc))
             return None
 
+    def file_uris(self, path: str) -> list[str]:
+        """Return the active Parquet files in the current Delta snapshot."""
+        if not _HAS_DELTALAKE:
+            return []
+        try:
+            from deltalake import DeltaTable  # noqa: PLC0415
+
+            table_path = self._table_path(path)
+            if not (Path(table_path) / "_delta_log").exists():
+                return []
+            return [str(uri) for uri in DeltaTable(table_path).file_uris()]
+        except Exception as exc:
+            logger.error("delta storage file listing failed", exc=str(exc))
+            return []
+
+    def parquet_scan_sql(self, path: str) -> str:
+        """Return a DuckDB relation expression for the current Delta snapshot."""
+        files = self.file_uris(path)
+        if not files:
+            raise FileNotFoundError(f"Delta table has no active Parquet files: {path}")
+        quoted = []
+        for file_uri in files:
+            safe_uri = file_uri.replace("'", "''")
+            quoted.append(f"'{safe_uri}'")
+        return f"read_parquet([{', '.join(quoted)}])"
+
     def delete(self, path: str) -> bool:
         """Remove the Delta table directory at *path* entirely."""
         try:
