@@ -28,6 +28,7 @@ logger = structlog.get_logger()
 __all__ = [
     "BaseTrainer",
     "PyTorchTrainer",
+    "SentenceTransformerFinetuneTrainer",
     "SklearnTrainer",
     "TrainingResult",
 ]
@@ -597,6 +598,202 @@ class PyTorchTrainer(BaseTrainer):
         self.model.eval()
         self._is_fitted = True
         logger.info("pytorch model loaded", name=self.model_name, path=str(path))
+
+
+_VALID_LOSS_TYPES = frozenset({"contrastive", "cosine"})
+
+
+class SentenceTransformerFinetuneTrainer(BaseTrainer):
+    """Fine-tunes a sentence-transformers bi-encoder on labeled sentence pairs.
+
+    Generic similarity-finetuning job type — domain-agnostic. Training data is
+    a set of ``(sentence_a, sentence_b)`` pairs plus a parallel list of
+    similarity labels (typically floats in ``[0, 1]``, or 0/1 for a binary
+    match/no-match signal). Runs via sentence-transformers' training API
+    (``SentenceTransformer.fit`` + a pairwise loss).
+
+    Args:
+        model_name: Registry name for the resulting fine-tuned model.
+        version: Semantic version.
+        base_model: Pretrained sentence-transformers model name or local path
+            to start fine-tuning from (e.g. ``"all-MiniLM-L6-v2"``).
+        loss_type: ``"contrastive"`` (default) or ``"cosine"``.
+        epochs: Fine-tuning epochs.
+        batch_size: Mini-batch size.
+        warmup_steps: LR warmup steps.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        version: str = "1.0.0",
+        *,
+        base_model: str = "all-MiniLM-L6-v2",
+        loss_type: str = "contrastive",
+        epochs: int = 3,
+        batch_size: int = 16,
+        warmup_steps: int = 100,
+    ) -> None:
+        super().__init__(model_name, version)
+        if loss_type not in _VALID_LOSS_TYPES:
+            msg = f"Unsupported loss_type {loss_type!r}. Must be one of {sorted(_VALID_LOSS_TYPES)}"
+            raise ValueError(msg)
+        self.base_model = base_model
+        self.loss_type = loss_type
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.warmup_steps = warmup_steps
+        self._model: Any = None
+        self._is_fitted = False
+
+    def _build_loss(self, model: Any) -> Any:
+        from sentence_transformers import losses
+
+        if self.loss_type == "cosine":
+            return losses.CosineSimilarityLoss(model)
+        return losses.ContrastiveLoss(model)
+
+    def train(
+        self,
+        X_train: Any,  # noqa: N803
+        y_train: Any,
+        **params: Any,
+    ) -> TrainingResult:
+        """Fine-tune on sentence pairs.
+
+        Args:
+            X_train: Sequence of ``(sentence_a, sentence_b)`` pairs.
+            y_train: Parallel sequence of similarity labels.
+        """
+        from sentence_transformers import InputExample, SentenceTransformer
+        from torch.utils.data import DataLoader
+
+        if not X_train:
+            raise ValueError("X_train (training pairs) must not be empty")
+        if len(X_train) != len(y_train):
+            raise ValueError("X_train and y_train must have the same length")
+
+        epochs = int(params.get("epochs", self.epochs))
+        batch_size = int(params.get("batch_size", self.batch_size))
+        warmup_steps = int(params.get("warmup_steps", self.warmup_steps))
+
+        self._model = SentenceTransformer(self.base_model)
+        examples = [
+            InputExample(texts=[a, b], label=float(label))
+            for (a, b), label in zip(X_train, y_train, strict=True)
+        ]
+        loader = DataLoader(examples, shuffle=True, batch_size=batch_size)
+        loss_fn = self._build_loss(self._model)
+
+        start = time.perf_counter()
+        self._model.fit(
+            train_objectives=[(loader, loss_fn)],
+            epochs=epochs,
+            warmup_steps=warmup_steps,
+            show_progress_bar=False,
+        )
+        duration = time.perf_counter() - start
+        self._is_fitted = True
+
+        metrics = self.evaluate(X_train, y_train)
+        logger.info(
+            "Finetuned sentence-transformer %s v%s in %.2fs (base=%s, loss=%s)",
+            self.model_name,
+            self.version,
+            duration,
+            self.base_model,
+            self.loss_type,
+        )
+        return TrainingResult(
+            model_name=self.model_name,
+            version=self.version,
+            metrics=metrics,
+            parameters={
+                "base_model": self.base_model,
+                "loss_type": self.loss_type,
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "warmup_steps": warmup_steps,
+            },
+            duration_seconds=duration,
+        )
+
+    def evaluate(self, X_test: Any, y_test: Any) -> dict[str, float]:  # noqa: N803
+        """Compute mean cosine similarity + mean absolute error vs *y_test* labels."""
+        if not self._is_fitted or self._model is None:
+            raise RuntimeError("Model not yet trained")
+        if not X_test:
+            return {"pairs_evaluated": 0.0}
+
+        from sentence_transformers import util
+
+        sims: list[float] = []
+        for a, b in X_test:
+            emb = self._model.encode([a, b])
+            sims.append(float(util.cos_sim(emb[0], emb[1])[0][0]))
+
+        mae = sum(abs(s - float(y)) for s, y in zip(sims, y_test, strict=True)) / len(sims)
+        return {
+            "pairs_evaluated": float(len(sims)),
+            "mean_cosine_similarity": round(sum(sims) / len(sims), 4),
+            "mean_abs_error": round(mae, 4),
+        }
+
+    def predict(self, X: Any) -> Any:  # noqa: N803
+        """Return cosine similarity scores for a sequence of sentence pairs."""
+        if not self._is_fitted or self._model is None:
+            raise RuntimeError("Model not yet trained")
+
+        from sentence_transformers import util
+
+        return [
+            float(util.cos_sim(self._model.encode(a), self._model.encode(b))[0][0]) for a, b in X
+        ]
+
+    def save(self, path: str) -> str:
+        """Save the fine-tuned model directory + metadata sidecar.
+
+        Unlike the pickle-based trainers above, sentence-transformers persists
+        a directory of framework-native config/weight files rather than a
+        single pickle blob, so the HMAC-over-pickle scheme doesn't apply here.
+        # ponytail: no tamper-detection sidecar for this artifact type; add
+        # directory checksums if shared-artifact integrity becomes a concern.
+        """
+        if not self._is_fitted or self._model is None:
+            raise RuntimeError("Model not yet trained")
+
+        out = Path(path)
+        out.mkdir(parents=True, exist_ok=True)
+        self._model.save(str(out))
+
+        meta = out / "training_metadata.json"
+        meta.write_text(
+            _json.dumps(
+                {
+                    "model_name": self.model_name,
+                    "version": self.version,
+                    "base_model": self.base_model,
+                    "loss_type": self.loss_type,
+                    "saved_at": datetime.now(tz=UTC).isoformat(),
+                }
+            )
+        )
+        logger.info("sentence-transformer model saved", name=self.model_name, path=str(out))
+        return str(out)
+
+    def load(
+        self,
+        path: str,
+        *,
+        extra_modules: frozenset[str] | None = None,
+    ) -> None:
+        """Load a previously fine-tuned model directory."""
+        from sentence_transformers import SentenceTransformer
+
+        _ = extra_modules  # SentenceTransformer handles its own module graph
+        self._model = SentenceTransformer(path)
+        self._is_fitted = True
+        logger.info("sentence-transformer model loaded", name=self.model_name, path=path)
 
 
 def train_experiment(config: Any, experiment_name: str) -> dict[str, Any]:

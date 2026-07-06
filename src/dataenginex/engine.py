@@ -205,6 +205,13 @@ class DexEngine:
         self.plugins = PluginRegistry()
         self._load_plugins()
 
+        # Project-local plugins (connectors/transforms defined by this
+        # project itself, e.g. moviedex's TmdbConnector) — separate from
+        # the installed-package plugin system above.
+        from dataenginex.core.project_plugins import load_project_plugins
+
+        load_project_plugins(self.project_dir)
+
         logger.info(
             "DexEngine ready",
             project=self.config.project.name,
@@ -304,7 +311,9 @@ class DexEngine:
         if name not in self.config.data.pipelines:
             msg = f"Pipeline '{name}' not found"
             raise KeyError(msg)
-        self.config.data.pipelines[name].schedule = schedule
+        self.config.data.pipelines[name] = self.config.data.pipelines[name].model_copy(
+            update={"schedule": schedule}
+        )
         self._save_config()
 
     # -------------------------------------------------------------------------

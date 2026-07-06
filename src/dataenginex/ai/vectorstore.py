@@ -51,7 +51,7 @@ __all__ = [
 # ======================================================================
 
 
-@dataclass
+@dataclass(frozen=True)
 class Document:
     """A text document with optional metadata and embedding."""
 
@@ -67,10 +67,14 @@ class Document:
             # random-id duplicate. InMemoryBackend has no eviction/cap, so a
             # random id here means unbounded growth across repeated scheduled
             # pipeline runs that re-ingest the same rows.
-            self.id = hashlib.sha256(self.text.encode("utf-8")).hexdigest()[:16]
+            # object.__setattr__ required: instance is frozen, but this is
+            # the one-time id derivation during construction, not a later mutation.
+            object.__setattr__(
+                self, "id", hashlib.sha256(self.text.encode("utf-8")).hexdigest()[:16]
+            )
 
 
-@dataclass
+@dataclass(frozen=True)
 class SearchResult:
     """Single search hit from a vector store query."""
 

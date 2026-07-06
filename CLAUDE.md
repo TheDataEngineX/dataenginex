@@ -59,6 +59,11 @@ pip install "dataenginex[postgres]"     # asyncpg for Postgres lineage
 pip install "dataenginex[qdrant]"       # Qdrant vector store
 pip install "dataenginex[queue]"        # arq background jobs
 pip install 'litellm>=1.83.3' --no-deps # LLM routing (separate: pins python-dotenv)
+pip install "dataenginex[kafka]"        # KafkaConnector (produce+consume)
+pip install "dataenginex[rabbitmq]"     # RabbitMQ orchestration/queue backend
+pip install "dataenginex[elasticsearch]" # ElasticsearchBackend (lexical search)
+pip install "dataenginex[graphql]"      # GraphQL schema-mount mechanism
+pip install "dataenginex[sqlalchemy]"   # ORM — new tables only, never a retrofit of raw-SQL modules
 ```
 
 ______________________________________________________________________
@@ -67,3 +72,13 @@ ______________________________________________________________________
 
 After any code change run: `uv run poe check-all` (lint + typecheck + test).
 Tests passing ≠ app working — run `dex validate dex.yaml` to verify config.
+
+## TMDB Data-Intelligence Re-Architecture (2026-07-06)
+
+Full design: `docs/superpowers/specs/2026-07-06-tmdb-data-intelligence-rearchitecture-design.md`.
+
+Binding rules while implementing this:
+
+- **Core vs custom boundary:** moviedex-specific logic (TMDB connector, Kafka topics, RabbitMQ handlers, ES mappings, GraphQL resolvers) stays in the moviedex project's own `plugins/` dir — never added here. Only genuinely reusable capability (new connector *types*, new transform *types*, generic backends/ABCs) goes in core. Test: would a different example project need this exact thing?
+- **Delivery:** one phase, no backward-compatibility shims.
+- **Reliability is non-negotiable:** every new stateful dependency (Kafka, RabbitMQ, Elasticsearch, Redis) needs explicit sized resource requests/limits, a circuit breaker so the core app/pipeline path never blocks or crashes on it being down, and bounded concurrency (semaphore caps) on any fan-out. See spec §6 — follows directly from the OOM incident fixed in `runner.py::_transform()` the same day this was scoped.

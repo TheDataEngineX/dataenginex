@@ -43,6 +43,7 @@ from dataenginex.data.transforms import transform_registry
 from dataenginex.data.transforms.sql import (  # noqa: F401
     CastTransform as _CastTransform,
 )
+from dataenginex.lakehouse.storage import DeltaStorage
 from dataenginex.middleware.domain_metrics import quality_gate_evaluations_total
 from dataenginex.warehouse.lineage import LineageBackend
 
@@ -63,7 +64,12 @@ def _infer_layer(pipeline_name: str) -> str:
     return "silver"
 
 
-@dataclass
+def _is_delta_table(path: Path) -> bool:
+    """Return True if *path* is a directory laid out as a Delta table."""
+    return (path / "_delta_log").exists()
+
+
+@dataclass(frozen=True)
 class PipelineResult:
     """Result of a single pipeline execution."""
 
@@ -328,6 +334,12 @@ class PipelineRunner:
                     conn.execute(
                         f"CREATE OR REPLACE VIEW {pf.stem} AS SELECT * FROM read_parquet('{safe}')"
                     )
+            for dd in sorted(p for p in layer_dir.iterdir() if p.is_dir()):
+                if not _is_delta_table(dd):
+                    continue
+                with contextlib.suppress(Exception):
+                    records = DeltaStorage(base_path=str(layer_dir)).read(dd.name)
+                    conn.register(dd.name, pa.Table.from_pylist(records or []))
         log.debug("lakehouse views registered")
 
     def _extract(
@@ -419,6 +431,27 @@ class PipelineRunner:
             )
         return rows
 
+    def _find_lakehouse_output(self, source_name: str) -> tuple[Path | None, Path | None]:
+        """Locate a pipeline's lakehouse output, Parquet file or Delta directory.
+
+        Searches bronze → silver → gold layers (most-likely layer first,
+        inferred from the source name prefix). Returns
+        ``(parquet_path, delta_dir)`` — exactly one is set, or both are
+        ``None`` if the output doesn't exist yet.
+        """
+        candidate_layers = [_infer_layer(source_name), "bronze", "silver", "gold"]
+        layers = list(dict.fromkeys(candidate_layers))  # de-dup, preserve order
+
+        for layer in layers:
+            layer_dir = self._data_dir / layer
+            p_candidate = layer_dir / f"{source_name}.parquet"
+            if p_candidate.exists():
+                return p_candidate, None
+            d_candidate = layer_dir / source_name
+            if _is_delta_table(d_candidate):
+                return None, d_candidate
+        return None, None
+
     def _extract_from_lakehouse(
         self,
         conn: duckdb.DuckDBPyConnection,
@@ -426,43 +459,34 @@ class PipelineRunner:
         cfg: PipelineConfig,
         log: Any,
     ) -> int:
-        """Load a previously-run pipeline's output as the bronze table.
-
-        Searches bronze → silver → gold layers in order.
-        """
+        """Load a previously-run pipeline's output as the bronze table."""
         source_name = cfg.source
-        # Search in most-likely layer first (inferred from source name prefix).
-        candidate_layers = [_infer_layer(source_name), "bronze", "silver", "gold"]
-        # Deduplicate while preserving order.
-        seen: set[str] = set()
-        layers: list[str] = []
-        for lyr in candidate_layers:
-            if lyr not in seen:
-                layers.append(lyr)
-                seen.add(lyr)
+        parquet_path, delta_dir = self._find_lakehouse_output(source_name)
 
-        parquet_path: Path | None = None
-        for layer in layers:
-            candidate = self._data_dir / layer / f"{source_name}.parquet"
-            if candidate.exists():
-                parquet_path = candidate
-                break
-
-        if parquet_path is None:
+        if parquet_path is None and delta_dir is None:
             msg = (
                 f"Lakehouse output for pipeline '{source_name}' not found. "
                 "Run upstream pipelines first."
             )
             raise PipelineStepError(step="extract", cause=msg, pipeline=name)
 
-        safe = str(parquet_path).replace("'", "''")
-        conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * FROM read_parquet('{safe}')")
+        if parquet_path is not None:
+            found_path = parquet_path
+            safe = str(parquet_path).replace("'", "''")
+            conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * FROM read_parquet('{safe}')")
+        else:
+            assert delta_dir is not None  # narrowed by the guard above
+            found_path = delta_dir
+            records = DeltaStorage(base_path=str(delta_dir.parent)).read(delta_dir.name)
+            conn.register("_delta_src", pa.Table.from_pylist(records or []))
+            conn.execute("CREATE OR REPLACE TABLE bronze AS SELECT * FROM _delta_src")
+
         row = conn.execute("SELECT COUNT(*) FROM bronze").fetchone()
         rows = int(row[0]) if row else 0
         log.info(
             "extract complete (lakehouse)",
             source=source_name,
-            path=str(parquet_path),
+            path=str(found_path),
             rows=rows,
         )
 
@@ -470,7 +494,7 @@ class PipelineRunner:
             self._lineage.record(
                 operation="ingest",
                 layer=_infer_layer(name),
-                source=str(parquet_path),
+                source=str(found_path),
                 destination=f"{_infer_layer(name)}/{name}",
                 input_count=rows,
                 output_count=rows,
@@ -522,6 +546,13 @@ class PipelineRunner:
                     step_name=f"transform-{i}:{step_config.type}",
                     metadata={"transform_type": step_config.type, "step_index": i},
                 )
+
+            # Each transform materializes a new physical table (CREATE OR REPLACE
+            # TABLE) rather than overwriting in place, so the previous step's table
+            # must be dropped or it stays resident for the rest of the pipeline run —
+            # on wide multi-million-row sources this accumulates one full dataset
+            # copy per transform step and was OOM-killing pods on cold-start ETL.
+            conn.execute(f"DROP TABLE IF EXISTS {prev_table}")
 
         return current_table, steps_completed
 
@@ -603,24 +634,30 @@ class PipelineRunner:
         table: str,
         log: Any,
     ) -> int:
-        """Write the final table to the correct lakehouse layer as Parquet.
+        """Write the final table to the correct lakehouse layer.
 
         Layer resolution (explicit > inferred):
         - cfg.target["layer"] if present.
         - Otherwise _infer_layer(pipeline_name) from name prefix.
+
+        Format resolution: cfg.target["format"], default "parquet".
         """
         count_row = conn.execute(f"SELECT count(*) FROM {table}").fetchone()
         rows = int(count_row[0]) if count_row else 0
 
         if cfg.target:
             target_layer = cfg.target.get("layer", _infer_layer(name))
+            target_format = cfg.target.get("format", "parquet")
         else:
             target_layer = _infer_layer(name)
+            target_format = "parquet"
 
         layer_dir = self._data_dir / target_layer
         layer_dir.mkdir(parents=True, exist_ok=True)
         output_name = cfg.destination or name
-        output_path = layer_dir / f"{output_name}.parquet"
+        output_path = layer_dir / (
+            f"{output_name}.parquet" if target_format == "parquet" else output_name
+        )
 
         # Inject audit metadata columns before writing. These are constant per run
         # so they don't affect row count — they are useful for lineage in downstream
@@ -639,8 +676,22 @@ class PipelineRunner:
                 '{source_name}'             AS _dex_source
             FROM {table}
         """)
-        conn.execute(f"COPY {meta_table} TO '{output_path}' (FORMAT PARQUET)")
-        log.info("load complete", layer=target_layer, path=str(output_path), rows=rows)
+        if target_format == "delta":
+            arrow_table = conn.execute(f"SELECT * FROM {meta_table}").to_arrow_table()
+            # mode="overwrite" mirrors Parquet COPY's full-file-replace semantics
+            # so re-running a pipeline replaces the prior output either way.
+            DeltaStorage(base_path=str(layer_dir), mode="overwrite").write(
+                arrow_table.to_pylist(), output_name
+            )
+        else:
+            conn.execute(f"COPY {meta_table} TO '{output_path}' (FORMAT PARQUET)")
+        log.info(
+            "load complete",
+            layer=target_layer,
+            format=target_format,
+            path=str(output_path),
+            rows=rows,
+        )
 
         if self._lineage is not None:
             self._lineage.record(
