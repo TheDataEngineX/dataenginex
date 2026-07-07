@@ -25,4 +25,5 @@ See [Quickstart](quickstart.md) for a full walkthrough with a sample project.
 - [Development Setup](development.md) — Prerequisites, workflow, troubleshooting
 - [Release Notes](release-notes.md) — Full version history
 - [Observability](observability.md) — Metrics, logging, tracing
+- [CI/CD](ci-cd.md) — CI pipeline and PyPI release automation
 - [Contributing](contributing.md) — How to contribute to the project

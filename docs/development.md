@@ -1,6 +1,6 @@
 # Development Setup Guide
 
-**Version**: `0.4.5` | see `pyproject.toml`
+**Version**: `0.5.0` | see `pyproject.toml`
 
 ## Prerequisites
 
@@ -14,9 +14,8 @@
 | build-essential / gcc | Yes | Native extension compilation |
 | Java 17+ JRE | Yes\* | PySpark tests (`openjdk-17-jre-headless`) |
 | uv | Yes | Python package & env manager |
-| Docker + Compose | Recommended | Full stack, integration tests, emulators |
-| Trivy | Optional | Local security scanning (`uv run poe security`) |
-| actionlint | Optional | GitHub Actions workflow linting |
+
+> Optional: `trivy` for local security scans, `actionlint` for GitHub Actions workflow linting.
 
 \* PySpark tests are auto-skipped when Java is unavailable.
 
@@ -232,7 +231,6 @@ uv run poe test               # Run all tests
 uv run poe test-cov           # Tests with coverage report
 uv run poe security           # pip-audit vulnerability scan
 uv run poe pre-commit         # Run all pre-commit hooks
-uv run poe docker-up          # Run Docker Compose stack
 uv run poe clean              # Remove caches and build artifacts
 ````
 
@@ -240,7 +238,5 @@ uv run poe clean              # Remove caches and build artifacts
 
 - **Code Style**: See [contributing.md](./contributing.md)
 - **Architecture**: See [architecture.md](./architecture.md)
-- **ADRs**: See [ADR-0001](./adr/0001-medallion-architecture.md) for architectural decisions
-- **Deployment**: See Deployment Runbook in the `infradex` repo
 - **Issues**: [GitHub Issues](https://github.com/TheDataEngineX/dataenginex/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/orgs/TheDataEngineX/discussions)

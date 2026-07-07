@@ -2,6 +2,14 @@
 
 Get a DataEngineX pipeline running in under five minutes.
 
+```mermaid
+flowchart LR
+    Install["pip install dataenginex"] --> Config["Create dex.yaml"]
+    Config --> Validate["dex validate dex.yaml"]
+    Validate --> Engine["Instantiate DexEngine"]
+    Engine --> Pipeline["engine.run_pipeline()"]
+```
+
 ## 1. Install
 
 ```bash
@@ -148,10 +156,4 @@ DataEngineX Studio is the optional web UI that loads a `dex.yaml` and provides a
 control plane for Data / ML / AI / System. It uses `dataenginex` directly as a library
 — no separate server process needed.
 
-```bash
-pip install dex-studio
-dex-studio                               # serve on http://localhost:7860
-dex-studio --config /path/to/dex.yaml   # open a specific project
-```
-
-See [dex-studio](https://github.com/TheDataEngineX/dex-studio) for details.
+See [github.com/TheDataEngineX/dex-studio](https://github.com/TheDataEngineX/dex-studio).

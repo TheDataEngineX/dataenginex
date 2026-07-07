@@ -62,7 +62,7 @@ ______________________________________________________________________
 | Persistence | DuckDB (`.dex/store.duckdb`) | — |
 | Logging | structlog | — |
 | Privacy | PrivacyGuard — PII detection, masking strategies, outbound call audit | — |
-| Connectors | CSV, Parquet, DuckDB, REST, Kafka | PySpark (`[data]`), dbt CLI (`[data]`) |
+| Connectors | CSV, Parquet, DuckDB, REST, HTTP, Kafka | PySpark (`[data]`), dbt CLI (`[data]`), Delta (`[delta]`), PostgreSQL (`[postgres]`) |
 
 **Local-first by default.** A fresh `pip install dataenginex` requires no external services — DuckDB is embedded; nothing reaches the network unless you explicitly configure it (or call a hosted LLM).
 
@@ -109,14 +109,7 @@ ______________________________________________________________________
 
 ## Want the full workbench?
 
-`dataenginex` is the library. The web UI is in a separate repo:
-
-```bash
-git clone https://github.com/TheDataEngineX/dex-studio && cd dex-studio
-docker compose up             # http://localhost:7860
-```
-
-DataEngineX Studio imports `dataenginex` directly — no separate API server, no HTTP hop.
+`dataenginex` is the library. The web UI is [dex-studio](https://github.com/TheDataEngineX/dex-studio) — it imports `dataenginex` directly, no HTTP hop.
 
 ______________________________________________________________________
 
@@ -126,7 +119,6 @@ ______________________________________________________________________
 | --- | --- |
 | [dataenginex](https://github.com/TheDataEngineX/dataenginex) | This library (PyPI) |
 | [dex-studio](https://github.com/TheDataEngineX/dex-studio) | Web UI — FastAPI + Jinja2 + HTMX |
-| [docs](https://github.com/TheDataEngineX/docs) | Docs site ([docs.thedataenginex.org](https://docs.thedataenginex.org)) — ADRs + roadmap live here |
 
 ______________________________________________________________________
 
@@ -139,9 +131,7 @@ ______________________________________________________________________
 | [Development](docs/development.md) | Local setup and workflow |
 | [API Reference](docs/api-reference/index.md) | Module-by-module reference |
 | [CHANGELOG](CHANGELOG.md) | Release history |
-| [Roadmap](https://github.com/TheDataEngineX/docs/blob/main/docs/roadmap/DESIGN-2026.md) | 10-week plan to v0.5 |
-| [ADRs](https://github.com/TheDataEngineX/docs/tree/main/adr) | Architecture decisions |
 
 ______________________________________________________________________
 
-**License:** MIT • **Python:** 3.13+ • **Status:** Pre-1.0 (rebuilding scope through v0.5)
+**License:** MIT • **Python:** 3.13+ • **Status:** Pre-1.0

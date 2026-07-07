@@ -41,9 +41,7 @@ dex validate dex.yaml     # Validate config file
 dex version               # Show version + environment
 
 # Dev
-uv run poe dev            # Dev server (uvicorn reload, port 17000) — for examples/API testing only (dataenginex has no built-in HTTP server; see dex-studio for web UI)
-uv run poe docker-up      # Docker compose up
-uv run poe docker-down    # Docker compose down
+uv run poe dev            # Dev server (uvicorn reload, port 17000) — for examples/API testing only (dataenginex has no built-in HTTP server)
 
 # Deps
 uv run poe uv-sync        # Sync deps from lockfile
@@ -58,12 +56,11 @@ pip install "dataenginex[cloud]"        # S3, GCS, BigQuery connectors
 pip install "dataenginex[postgres]"     # asyncpg for Postgres lineage
 pip install "dataenginex[qdrant]"       # Qdrant vector store
 pip install "dataenginex[queue]"        # arq background jobs
+pip install "dataenginex[delta]"        # Delta Lake connector
+pip install "dataenginex[pytorch]"      # PyTorch ML
 pip install 'litellm>=1.83.3' --no-deps # LLM routing (separate: pins python-dotenv)
-pip install "dataenginex[kafka]"        # KafkaConnector (produce+consume)
-pip install "dataenginex[rabbitmq]"     # RabbitMQ orchestration/queue backend
-pip install "dataenginex[elasticsearch]" # ElasticsearchBackend (lexical search)
-pip install "dataenginex[graphql]"      # GraphQL schema-mount mechanism
-pip install "dataenginex[sqlalchemy]"   # ORM — new tables only, never a retrofit of raw-SQL modules
+
+# Kafka, RabbitMQ, Elasticsearch, GraphQL, SQLAlchemy are in the base install (no extra needed).
 ```
 
 ______________________________________________________________________
@@ -75,10 +72,4 @@ Tests passing ≠ app working — run `dex validate dex.yaml` to verify config.
 
 ## TMDB Data-Intelligence Re-Architecture (2026-07-06)
 
-Full design: `docs/superpowers/specs/2026-07-06-tmdb-data-intelligence-rearchitecture-design.md`.
-
-Binding rules while implementing this:
-
-- **Core vs custom boundary:** moviedex-specific logic (TMDB connector, Kafka topics, RabbitMQ handlers, ES mappings, GraphQL resolvers) stays in the moviedex project's own `plugins/` dir — never added here. Only genuinely reusable capability (new connector *types*, new transform *types*, generic backends/ABCs) goes in core. Test: would a different example project need this exact thing?
-- **Delivery:** one phase, no backward-compatibility shims.
-- **Reliability is non-negotiable:** every new stateful dependency (Kafka, RabbitMQ, Elasticsearch, Redis) needs explicit sized resource requests/limits, a circuit breaker so the core app/pipeline path never blocks or crashes on it being down, and bounded concurrency (semaphore caps) on any fan-out. See spec §6 — follows directly from the OOM incident fixed in `runner.py::_transform()` the same day this was scoped.
+**Core vs custom boundary:** moviedex-specific logic (TMDB connector, Kafka topics, RabbitMQ handlers, ES mappings, GraphQL resolvers) stays in the moviedex project's own `plugins/` dir — never added to dataenginex. Only genuinely reusable capability (new connector types, transform types, generic backends/ABCs) goes in core.

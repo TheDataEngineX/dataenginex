@@ -10,7 +10,7 @@ This document defines the software development lifecycle (SDLC) for DataEngineX,
 
 ## Goals
 
-- Ship deterministic builds with a single immutable image tag per change.
+- Ship deterministic builds with a single immutable version per release.
 - Enforce quality gates (lint, test, type checks, security scan) on every PR.
 - Maintain a complete audit trail for promotion across environments.
 
@@ -89,29 +89,28 @@ ______________________________________________________________________
 
 **Actions**:
 
-- Build container image once and tag with commit SHA.
-- Push image to registry.
-- Update environment manifests via GitOps.
+- Build wheel + sdist once.
+- Publish to PyPI via OIDC trusted publishing.
 
-**Exit**: New image tag recorded in git and ArgoCD sync completes.
+**Exit**: Package published on PyPI and GitHub Release created.
 
-**Artifacts**: Image tag, git commit updating kustomization, ArgoCD sync history.
+**Artifacts**: Wheel + sdist, CycloneDX SBOM, GitHub Release.
 
 ______________________________________________________________________
 
 ### 6) Operate
 
-**Entry**: Deployment complete.
+**Entry**: Package published to PyPI.
 
 **Activities**:
 
-- Monitor application health and logs.
-- Respond to alerts and incidents.
-- Apply rollback if required.
+- Monitor PyPI download metrics and issue tracker.
+- Respond to bug reports and feature requests.
+- Patch security vulnerabilities in dependencies.
 
-**Exit**: Service stable and verified.
+**Exit**: No active incidents.
 
-**Artifacts**: Alerts, logs, incident notes, rollback commits (if any).
+**Artifacts**: GitHub Issues, dependency audit reports.
 
 ## Development Workflow (Summary)
 
@@ -155,8 +154,7 @@ ______________________________________________________________________
 
 **Operations:**
 
-- **Deployment Runbook** (in `infradex` repo) - Release procedures
-- **Project Roadmap** (in the external `docs` repository) - Issue tracking and milestone source
+- **Observability Guide** (see [observability.md](observability.md)) - Metrics, logging, tracing
 
 ______________________________________________________________________
 
