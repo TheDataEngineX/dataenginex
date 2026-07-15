@@ -71,7 +71,9 @@ class DexBackend(Protocol):
     @property
     def lineage(self) -> Any: ...
 
-    def run_pipeline(self, name: str) -> Any: ...
+    def run_pipeline(
+        self, name: str, *, progress_cb: Any = None, checkpoint_cb: Any = None,
+    ) -> Any: ...
     def pipeline_stats(self) -> dict[str, int]: ...
     def pipeline_last_run(self, name: str) -> Any | None: ...
     def update_pipeline_schedule(self, name: str, schedule: str | None) -> None: ...
@@ -245,13 +247,17 @@ class DexEngine:
     # Pipeline
     # -------------------------------------------------------------------------
 
-    def run_pipeline(self, name: str) -> Any:
+    def run_pipeline(
+        self, name: str, *, progress_cb: Any = None, checkpoint_cb: Any = None,
+    ) -> Any:
         import time
 
         from dataenginex.data.pipeline.runner import PipelineResult
 
         start = time.monotonic()
-        result: PipelineResult = self.pipeline_runner.run(name)
+        result: PipelineResult = self.pipeline_runner.run(
+            name, progress_cb=progress_cb, checkpoint_cb=checkpoint_cb,
+        )
         duration_ms = (time.monotonic() - start) * 1000
 
         self.store.record_pipeline_run(
@@ -262,6 +268,7 @@ class DexEngine:
             steps_completed=result.steps_completed,
             duration_ms=duration_ms,
             error=result.error,
+            skipped=result.skipped,
         )
         self.store.log_audit(
             action="pipeline_run",
@@ -475,11 +482,7 @@ class DexEngine:
                             ).fetchone()
                             row_count = int(row[0]) if row else None
                     else:
-                        with self._duckdb_ro() as conn:
-                            row = conn.execute(
-                                f"SELECT COUNT(*) FROM {self._lakehouse_scan_sql(f, table_format)}"
-                            ).fetchone()
-                            row_count = int(row[0]) if row else None
+                        row_count = self._delta_row_count(f)
 
                 # Register/refresh in catalog
                 self.catalog.register(
@@ -520,6 +523,29 @@ class DexEngine:
         from dataenginex.lakehouse.storage import DeltaStorage
 
         return DeltaStorage(base_path=str(table_path.parent)).parquet_scan_sql(table_path.name)
+
+    def _delta_row_count(self, table_path: Path) -> int | None:
+        """Row count for a Delta table from transaction-log stats, no data scan.
+
+        ``SELECT COUNT(*)`` over ``delta_scan()`` reads every row of every
+        file — fine for small tables, but a full scan of a 100M+-row table
+        (e.g. IMDB's bronze_principals) on every catalog listing is what was
+        OOM-crashing the container repeatedly. Delta's add-file actions
+        already carry ``num_records`` per file; summing that is O(files),
+        not O(rows).
+        """
+        try:
+            from deltalake import DeltaTable  # noqa: PLC0415
+
+            actions = DeltaTable(str(table_path)).get_add_actions(flatten=True)
+            if "num_records" not in actions.column_names:
+                raise ValueError("no num_records stats")  # noqa: TRY301
+            return int(sum(actions.column("num_records").to_pylist()))
+        except Exception:
+            with self._duckdb_ro() as conn:
+                scan = self._lakehouse_scan_sql(table_path, "delta")
+                row = conn.execute(f"SELECT COUNT(*) FROM {scan}").fetchone()
+                return int(row[0]) if row else None
 
     def warehouse_table_schema(self, table_name: str, layer: str) -> list[dict[str, Any]]:
         table_path, table_format = self._lakehouse_table_location(table_name, layer)

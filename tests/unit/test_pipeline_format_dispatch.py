@@ -33,6 +33,40 @@ data:
     return config_file
 
 
+def test_load_writes_audit_columns_without_intermediate_table(tmp_path: Path) -> None:
+    """Regression test for the sink-write memory fix: audit columns
+    (_dex_ingested_at, _dex_pipeline, _dex_layer, _dex_source) are appended
+    directly in the COPY's SELECT rather than via an intermediate
+    "..._with_meta" DuckDB table — verify the output still carries the
+    correct values with the new single-pass query."""
+    import duckdb
+
+    _write_csv(tmp_path)
+    config_file = _write_config(
+        tmp_path,
+        """    bronze_movies:
+      source: movies
+      target:
+        layer: bronze
+""",
+    )
+    data_dir = tmp_path / "data"
+    runner = PipelineRunner(load_config(config_file), data_dir=data_dir)
+    result = runner.run("bronze_movies")
+
+    assert result.success is True
+    out_path = data_dir / "bronze" / "bronze_movies.parquet"
+    con = duckdb.connect(":memory:")
+    row = con.execute(
+        f"SELECT DISTINCT _dex_pipeline, _dex_layer, _dex_source FROM '{out_path}'"
+    ).fetchone()
+    assert row == ("bronze_movies", "bronze", "movies")
+    ingested_count = con.execute(
+        f"SELECT count(*) FROM '{out_path}' WHERE _dex_ingested_at IS NOT NULL"
+    ).fetchone()
+    assert ingested_count == (4,)
+
+
 def test_no_format_key_still_writes_parquet(tmp_path: Path) -> None:
     """A pipeline with no target.format keeps writing Parquet — zero behavior change."""
     _write_csv(tmp_path)

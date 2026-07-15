@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pyarrow as pa
+import pyarrow.dataset as ds
 import structlog
 
 from dataenginex.config.schema import (
@@ -27,6 +30,7 @@ from dataenginex.config.schema import (
     TransformStepConfig,
 )
 from dataenginex.core.exceptions import PipelineError, PipelineStepError
+from dataenginex.core.resources import duckdb_memory_limit
 from dataenginex.data.connectors import connector_registry
 
 # Import to trigger registration
@@ -48,6 +52,7 @@ from dataenginex.middleware.domain_metrics import quality_gate_evaluations_total
 from dataenginex.warehouse.lineage import LineageBackend
 
 logger = structlog.get_logger()
+
 
 # Prefixes that imply a specific lakehouse layer when no explicit target is set.
 _LAYER_PREFIXES: list[tuple[str, str]] = [
@@ -80,6 +85,7 @@ class PipelineResult:
     steps_completed: int = 0
     dry_run: bool = False
     error: str | None = None
+    skipped: bool = False
 
 
 def _build_transform_kwargs(step: TransformStepConfig) -> dict[str, Any]:
@@ -158,13 +164,36 @@ class PipelineRunner:
         # Temp directory for DuckDB spill-to-disk — prevents OOM on large datasets
         self._tmp_dir = (self._data_dir.parent / "tmp" / "duckdb").resolve()
         self._tmp_dir.mkdir(parents=True, exist_ok=True)
+        # Per-pipeline content hash of the last extracted source, so a run with
+        # unchanged upstream data can skip transform/quality/load entirely
+        # instead of redoing (and rewriting) identical work every schedule tick.
+        self._content_hash_file = self._data_dir.parent / "content_hashes.json"
 
     # -------------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------------
 
-    def run(self, pipeline_name: str, *, dry_run: bool = False) -> PipelineResult:
-        """Run a single pipeline by name."""
+    def run(
+        self,
+        pipeline_name: str,
+        *,
+        dry_run: bool = False,
+        progress_cb: Callable[[str, int, int], None] | None = None,
+        checkpoint_cb: Callable[[str], None] | None = None,
+    ) -> PipelineResult:
+        """Run a single pipeline by name.
+
+        *progress_cb*, if given, is called as ``progress_cb(stage, current,
+        total)`` after each of the pipeline's 4 stages (extract, transform,
+        quality, load) completes — the hook a caller (e.g. dex-studio's job
+        runner) uses to expose a live progress percentage for a running
+        pipeline.
+
+        *checkpoint_cb*, if given, is called as ``checkpoint_cb(stage_name)``
+        after each stage completes successfully. Used by dex-studio for
+        step-level recovery — if a pipeline fails at stage 3, it can resume
+        from stage 3 instead of restarting from scratch.
+        """
         pipelines = self._config.data.pipelines
         if pipeline_name not in pipelines:
             available = list(pipelines.keys())
@@ -179,17 +208,33 @@ class PipelineRunner:
             log.info("pipeline dry run — validating only")
             return PipelineResult(pipeline=pipeline_name, success=True, dry_run=True)
 
-        conn = duckdb.connect(":memory:", config={"temp_directory": str(self._tmp_dir)})
+        # On-disk (not :memory:) so DuckDB's buffer manager can page finished
+        # table blocks to this file under memory pressure. An in-memory
+        # database keeps ALL table storage in RAM regardless of memory_limit
+        # or temp_directory — those only spill operator/intermediate state —
+        # so a 100M+-row bronze table (e.g. IMDB principals) has nowhere to
+        # go but the process heap and OOMs the container outright.
+        db_path = self._tmp_dir / f"{pipeline_name}.duckdb"
+        conn = duckdb.connect(
+            str(db_path),
+            config={
+                "temp_directory": str(self._tmp_dir),
+                "memory_limit": duckdb_memory_limit(),
+            },
+        )
 
         try:
-            return self._execute(conn, pipeline_name, pipeline_config, log)
+            return self._execute(conn, pipeline_name, pipeline_config, log,
+                                progress_cb=progress_cb, checkpoint_cb=checkpoint_cb)
         except (PipelineError, PipelineStepError, KeyError):
             raise
         except Exception as e:
-            log.error("pipeline failed", error=str(e))
+            log.error("pipeline failed", error=str(e), exc_info=True)
             return PipelineResult(pipeline=pipeline_name, success=False, error=str(e))
         finally:
             conn.close()
+            db_path.unlink(missing_ok=True)
+            db_path.with_suffix(".duckdb.wal").unlink(missing_ok=True)
 
     def run_all(self) -> dict[str, PipelineResult]:
         """Run all pipelines in dependency order."""
@@ -224,7 +269,13 @@ class PipelineRunner:
             raise KeyError(msg)
         cfg = pipelines[pipeline_name]
         log = logger.bind(pipeline=pipeline_name, mode="preview")
-        conn = duckdb.connect(":memory:", config={"temp_directory": str(self._tmp_dir)})
+        conn = duckdb.connect(
+            ":memory:",
+            config={
+                "temp_directory": str(self._tmp_dir),
+                "memory_limit": duckdb_memory_limit(),
+            },
+        )
         try:
             self._register_lakehouse_views(conn, log)
             rows_input = self._extract(conn, pipeline_name, cfg, log)
@@ -289,28 +340,70 @@ class PipelineRunner:
         name: str,
         cfg: PipelineConfig,
         log: Any,
+        progress_cb: Callable[[str, int, int], None] | None = None,
+        checkpoint_cb: Callable[[str], None] | None = None,
     ) -> PipelineResult:
         """Core pipeline execution: extract -> register views -> transform -> quality -> load."""
+
+        def _report(stage: str, current: int) -> None:
+            if progress_cb is not None:
+                with contextlib.suppress(Exception):
+                    progress_cb(stage, current, 4)
+
+        def _checkpoint(stage: str) -> None:
+            if checkpoint_cb is not None:
+                with contextlib.suppress(Exception):
+                    checkpoint_cb(stage)
+
         # Register all existing lakehouse parquet files as DuckDB views so that
         # cross-pipeline SQL references (e.g. silver_movies JOIN bronze_ratings)
         # resolve correctly inside the same connection.
         self._register_lakehouse_views(conn, log)
 
         rows_input = self._extract(conn, name, cfg, log)
+        _report("extract", 1)
+        _checkpoint("extract")
 
         # Empty source (e.g. SSE window with no events) — nothing to transform or load.
         if rows_input == 0:
             log.info("pipeline complete — empty source, nothing to write", pipeline=name)
+            _report("load", 4)
             return PipelineResult(
                 pipeline=name, success=True, rows_input=0, rows_output=0, steps_completed=0
             )
 
+        content_hash = self._content_hash(conn)
+        if content_hash is not None and self._load_content_hashes().get(name) == content_hash:
+            log.info(
+                "pipeline skipped — source unchanged since last run",
+                pipeline=name,
+                rows_input=rows_input,
+            )
+            _report("load", 4)
+            return PipelineResult(
+                pipeline=name,
+                success=True,
+                rows_input=rows_input,
+                rows_output=rows_input,
+                steps_completed=0,
+                skipped=True,
+            )
+
         current_table, steps = self._transform(conn, name, cfg, log)
+        _report("transform", 2)
+        _checkpoint("transform")
         self._check_quality(conn, name, cfg, current_table, log)
+        _report("quality", 3)
+        _checkpoint("quality")
         rows_output = self._load(conn, name, cfg, current_table, log)
+        _report("load", 4)
+        _checkpoint("load")
         self._post_load_hooks(conn, name, cfg, current_table, log)
         self._persist_entity_matches(conn, cfg, current_table, log)
         self._publish_outputs(conn, cfg, current_table, log)
+
+        if content_hash is not None:
+            self._save_content_hash(name, content_hash)
 
         return PipelineResult(
             pipeline=name,
@@ -349,6 +442,36 @@ class PipelineRunner:
                     conn.execute(f'CREATE OR REPLACE VIEW "{dd.name}" AS SELECT * FROM {scan}')
         log.debug("lakehouse views registered")
 
+    def _content_hash(self, conn: duckdb.DuckDBPyConnection, table: str = "bronze") -> str | None:
+        """Cheap order-independent signature of *table*'s current contents.
+
+        Uses DuckDB's native per-row hash() combined with bit_xor() — a single
+        columnar aggregate pass, not a Python-side row-by-row hash — so this
+        stays cheap even for the largest sources (tens of millions of rows).
+        """
+        try:
+            row = conn.execute(f'SELECT count(*), bit_xor(hash(t)) FROM "{table}" t').fetchone()
+        except Exception:
+            return None
+        if row is None:
+            return None
+        count, xor_hash = row
+        return f"{count}:{xor_hash}"
+
+    def _load_content_hashes(self) -> dict[str, str]:
+        if not self._content_hash_file.exists():
+            return {}
+        try:
+            return dict(json.loads(self._content_hash_file.read_text()))
+        except Exception:
+            return {}
+
+    def _save_content_hash(self, name: str, content_hash: str) -> None:
+        hashes = self._load_content_hashes()
+        hashes[name] = content_hash
+        with contextlib.suppress(Exception):
+            self._content_hash_file.write_text(json.dumps(hashes))
+
     def _extract(
         self,
         conn: duckdb.DuckDBPyConnection,
@@ -377,6 +500,27 @@ class PipelineRunner:
             f"Available sources: {list(sources.keys())}"
         )
         raise PipelineStepError(step="extract", cause=msg, pipeline=name)
+
+    @staticmethod
+    def _materialize_bronze(conn: duckdb.DuckDBPyConnection, arrow_source: Any) -> None:
+        """Load *arrow_source* into a ``bronze`` table in *conn*.
+
+        A FileSystemDataset's underlying parquet files are scanned via
+        DuckDB's native read_parquet() — a genuinely streaming, batch-based
+        scan with no Arrow/Python object in between. Registering the
+        Dataset object instead still routes through pyarrow's scanning
+        glue, which was enough overhead to crash the container at 100M+
+        rows on the largest IMDB sources. Everything else (a Table, or a
+        Dataset with no on-disk files) goes through conn.register().
+        """
+        files = getattr(arrow_source, "files", None)
+        if files:
+            quoted = ", ".join("'" + f.replace("'", "''") + "'" for f in files)
+            scan_sql = f"CREATE OR REPLACE TABLE bronze AS SELECT * FROM read_parquet([{quoted}])"
+            conn.execute(scan_sql)
+        else:
+            conn.register("_raw_src", arrow_source)
+            conn.execute("CREATE OR REPLACE TABLE bronze AS SELECT * FROM _raw_src")
 
     def _extract_from_source(
         self,
@@ -413,19 +557,32 @@ class PipelineRunner:
         finally:
             connector.disconnect()
 
-        # Connectors may return a pa.Table (e.g. HttpConnector) to avoid the
-        # cost of converting 10M+ rows through Python dicts.
-        arrow_table = raw_data if isinstance(raw_data, pa.Table) else pa.Table.from_pylist(raw_data)
+        # Connectors may return a pa.Table (small/medium sources) or a lazy
+        # pyarrow.dataset.Dataset (e.g. HttpConnector, for the largest IMDB
+        # sources) — the latter lets DuckDB scan straight off disk during
+        # the CREATE TABLE below instead of ever materializing a 100M+ row
+        # Arrow Table in the Python process heap.
+        if isinstance(raw_data, ds.Dataset):  # type: ignore[attr-defined]
+            arrow_source: Any = raw_data
+            schema = raw_data.schema
+            row_count = raw_data.count_rows()
+        elif isinstance(raw_data, pa.Table):
+            arrow_source = raw_data
+            schema = raw_data.schema
+            row_count = len(raw_data)
+        else:
+            arrow_source = pa.Table.from_pylist(raw_data)
+            schema = arrow_source.schema
+            row_count = len(arrow_source)
 
         # Empty result (e.g. SSE window with no matching events) — nothing to load.
-        if len(arrow_table) == 0 or len(arrow_table.schema) == 0:
+        if row_count == 0 or len(schema) == 0:
             log.info("extract complete (source) — empty result", source=cfg.source)
             conn.execute("CREATE OR REPLACE TABLE bronze (placeholder VARCHAR)")
             rows = 0
         else:
-            conn.register("_raw_src", arrow_table)
-            conn.execute("CREATE OR REPLACE TABLE bronze AS SELECT * FROM _raw_src")
-            rows = len(arrow_table)
+            self._materialize_bronze(conn, arrow_source)
+            rows = row_count
         log.info("extract complete (source)", source=cfg.source, rows=rows)
 
         if self._lineage is not None:
@@ -497,7 +654,19 @@ class PipelineRunner:
         if parquet_path is not None:
             found_path = parquet_path
             safe = str(parquet_path).replace("'", "''")
-            conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * FROM read_parquet('{safe}')")
+            cols = conn.execute(f"DESCRIBE SELECT * FROM read_parquet('{safe}')").fetchall()
+            existing_cols = {c[0] for c in cols}
+            exclude_cols = [
+                c for c in (
+                    "_dex_ingested_at", "_dex_pipeline", "_dex_layer", "_dex_source",
+                    "_dex_row_hash", "_dex_valid_from", "_dex_valid_to", "_dex_is_current"
+                ) if c in existing_cols
+            ]
+            exclude_sql = ", ".join(exclude_cols) if exclude_cols else ""
+            if exclude_sql:
+                conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * EXCLUDE ({exclude_sql}) FROM read_parquet('{safe}')")
+            else:
+                conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * FROM read_parquet('{safe}')")
         else:
             assert delta_dir is not None  # narrowed by the guard above
             found_path = delta_dir
@@ -508,7 +677,24 @@ class PipelineRunner:
             except FileNotFoundError:
                 msg = f"Delta source '{source_name}' has no active Parquet files"
                 raise PipelineStepError(step="extract", cause=msg, pipeline=name) from None
-            conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * FROM {scan}")
+            # Get column names from the Delta table to only exclude existing columns
+            try:
+                cols = conn.execute(f"DESCRIBE SELECT * FROM {scan} LIMIT 0").fetchall()
+                existing_cols = {c[0] for c in cols}
+                exclude_cols = [
+                    c for c in (
+                        "_dex_ingested_at", "_dex_pipeline", "_dex_layer", "_dex_source",
+                        "_dex_row_hash", "_dex_valid_from", "_dex_valid_to", "_dex_is_current"
+                    ) if c in existing_cols
+                ]
+                exclude_sql = ", ".join(exclude_cols) if exclude_cols else ""
+                if exclude_sql:
+                    conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * EXCLUDE ({exclude_sql}) FROM {scan}")
+                else:
+                    conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * FROM {scan}")
+            except Exception:
+                # Fallback: try without EXCLUDE if schema inspection fails
+                conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * FROM {scan}")
 
         row = conn.execute("SELECT COUNT(*) FROM bronze").fetchone()
         rows = int(row[0]) if row else 0
@@ -691,12 +877,17 @@ class PipelineRunner:
         # Inject audit metadata columns before writing. These are constant per run
         # so they don't affect row count — they are useful for lineage in downstream
         # SQL queries and external BI tools.
+        #
+        # The audit columns are appended directly in this SELECT and read straight
+        # from `table` — not materialized into a separate "..._with_meta" table
+        # first. For large sources (10M+ rows) that intermediate duplicate doubled
+        # peak memory in the pipeline's single :memory: DuckDB connection for no
+        # benefit; DuckDB streams `COPY (SELECT ...) TO file` without needing a
+        # persisted copy of the subquery.
         ingested_at = datetime.datetime.now(datetime.UTC).isoformat()
         source_name = (cfg.source or name).replace("'", "''")
         safe_name = name.replace("'", "''")
-        meta_table = f"{table}_with_meta"
-        conn.execute(f"""
-            CREATE OR REPLACE TABLE {meta_table} AS
+        select_with_meta = f"""
             SELECT
                 *,
                 '{ingested_at}'::TIMESTAMPTZ AS _dex_ingested_at,
@@ -704,16 +895,32 @@ class PipelineRunner:
                 '{target_layer}'            AS _dex_layer,
                 '{source_name}'             AS _dex_source
             FROM {table}
-        """)
-        if target_format == "delta":
-            arrow_table = conn.execute(f"SELECT * FROM {meta_table}").to_arrow_table()
+        """
+        scd_type = (cfg.target or {}).get("scd_type", "1")
+        if target_format == "delta" and scd_type == "2":
+            rows = self._load_scd2(
+                conn, name, cfg, table, layer_dir, output_name, target_layer, log
+            )
+        elif target_format == "delta":
+            # Stream via a RecordBatchReader rather than materializing the
+            # whole result as a single pyarrow.Table: to_arrow_table() on a
+            # source this size (10M+ rows) pulled enough memory in one shot
+            # to crash the container outright. write_deltalake() accepts a
+            # RecordBatchReader directly, so DuckDB and delta-rs pass batches
+            # through without either side ever holding the full table.
+            log.info("delta load: duckdb to_arrow_reader starting", rows=rows)
+            arrow_reader = conn.execute(select_with_meta).to_arrow_reader(100_000)
+            log.info("delta load: duckdb to_arrow_reader created")
             # mode="overwrite" mirrors Parquet COPY's full-file-replace semantics
             # so re-running a pipeline replaces the prior output either way.
-            DeltaStorage(base_path=str(layer_dir), mode="overwrite").write(
-                arrow_table.to_pylist(), output_name
-            )
+            if not DeltaStorage(base_path=str(layer_dir), mode="overwrite").write(
+                arrow_reader, output_name
+            ):
+                msg = f"pipeline '{name}': delta write failed — see prior log for cause"
+                raise PipelineError(msg)
+            log.info("delta load: DeltaStorage.write returned")
         else:
-            conn.execute(f"COPY {meta_table} TO '{output_path}' (FORMAT PARQUET)")
+            conn.execute(f"COPY ({select_with_meta}) TO '{output_path}' (FORMAT PARQUET)")
         log.info(
             "load complete",
             layer=target_layer,
@@ -733,6 +940,148 @@ class PipelineRunner:
                 pipeline_name=name,
                 step_name="load",
             )
+        return rows
+
+    def _load_scd2(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        name: str,
+        cfg: PipelineConfig,
+        table: str,
+        layer_dir: Path,
+        output_name: str,
+        target_layer: str,
+        log: Any,
+    ) -> int:
+        """Slowly Changing Dimension Type 2 write: keep full history.
+
+        A row whose natural key already exists gets closed out
+        (_dex_valid_to=now, _dex_is_current=false) and a fresh version is
+        inserted (_dex_valid_from=now, _dex_is_current=true) whenever its
+        content hash differs from the prior current version; an unchanged
+        key is left untouched. Row-level hash uses the same DuckDB-native
+        hash(t) technique as the skip-if-unchanged check — one columnar
+        pass, no Python-side hashing.
+
+        target.scd_key selects the natural key column; falls back to the
+        first quality.uniqueness column if unset.
+        """
+        target = cfg.target or {}
+        key = target.get("scd_key")
+        if not key and cfg.quality and cfg.quality.uniqueness:
+            key = cfg.quality.uniqueness[0]
+        if not key:
+            msg = (
+                f"pipeline '{name}': target.scd_type is '2' but no natural key is "
+                "configured — set target.scd_key or quality.uniqueness."
+            )
+            raise PipelineError(msg)
+        safe_key = key.replace('"', '""')
+
+        ingested_at = datetime.datetime.now(datetime.UTC).isoformat()
+        source_name = (cfg.source or name).replace("'", "''")
+        safe_name = name.replace("'", "''")
+
+        new_hashed = f"""
+            SELECT *, hash(t)::VARCHAR AS _dex_row_hash FROM {table} t
+        """
+
+        storage = DeltaStorage(base_path=str(layer_dir), mode="overwrite")
+        existing_scan: str | None
+        try:
+            existing_scan = storage.parquet_scan_sql(output_name)
+            describe_sql = f"DESCRIBE SELECT * FROM {existing_scan} LIMIT 0"
+            existing_cols = {r[0] for r in conn.execute(describe_sql).fetchall()}
+            if "_dex_is_current" not in existing_cols:
+                # Table exists but predates SCD2 (e.g. was written before this
+                # pipeline turned scd_type on) — nothing to version against yet.
+                log.warning(
+                    "scd2 enabled on a table with no prior SCD2 history — "
+                    "starting fresh from this run",
+                    pipeline=name,
+                )
+                existing_scan = None
+        except FileNotFoundError:
+            existing_scan = None
+
+        if existing_scan is None:
+            # First run — every row is new.
+            merged_sql = f"""
+                SELECT
+                    * EXCLUDE (_dex_row_hash),
+                    '{ingested_at}'::TIMESTAMPTZ AS _dex_valid_from,
+                    NULL::TIMESTAMPTZ            AS _dex_valid_to,
+                    true                          AS _dex_is_current,
+                    _dex_row_hash,
+                    '{ingested_at}'::TIMESTAMPTZ AS _dex_ingested_at,
+                    '{safe_name}'                AS _dex_pipeline,
+                    '{target_layer}'             AS _dex_layer,
+                    '{source_name}'              AS _dex_source
+                FROM ({new_hashed})
+            """
+        else:
+            merged_sql = f"""
+                WITH new_hashed AS ({new_hashed}),
+                existing_current AS (
+                    SELECT * FROM {existing_scan} WHERE _dex_is_current
+                ),
+                existing_historical AS (
+                    SELECT * FROM {existing_scan} WHERE NOT _dex_is_current
+                ),
+                to_close AS (
+                    SELECT e.* EXCLUDE (_dex_valid_to, _dex_is_current),
+                           '{ingested_at}'::TIMESTAMPTZ AS _dex_valid_to,
+                           false AS _dex_is_current
+                    FROM existing_current e
+                    LEFT JOIN new_hashed n ON e."{safe_key}" = n."{safe_key}"
+                    WHERE n."{safe_key}" IS NULL OR e._dex_row_hash != n._dex_row_hash
+                ),
+                unchanged AS (
+                    SELECT e.* FROM existing_current e
+                    JOIN new_hashed n
+                      ON e."{safe_key}" = n."{safe_key}" AND e._dex_row_hash = n._dex_row_hash
+                ),
+                new_or_changed AS (
+                    SELECT
+                        n.* EXCLUDE (_dex_row_hash),
+                        '{ingested_at}'::TIMESTAMPTZ AS _dex_valid_from,
+                        NULL::TIMESTAMPTZ            AS _dex_valid_to,
+                        true                          AS _dex_is_current,
+                        n._dex_row_hash,
+                        '{ingested_at}'::TIMESTAMPTZ AS _dex_ingested_at,
+                        '{safe_name}'                AS _dex_pipeline,
+                        '{target_layer}'             AS _dex_layer,
+                        '{source_name}'              AS _dex_source
+                    FROM new_hashed n
+                    LEFT JOIN existing_current e ON n."{safe_key}" = e."{safe_key}"
+                    WHERE e."{safe_key}" IS NULL OR e._dex_row_hash != n._dex_row_hash
+                )
+                SELECT * FROM to_close
+                UNION ALL BY NAME SELECT * FROM unchanged
+                UNION ALL BY NAME SELECT * FROM new_or_changed
+                UNION ALL BY NAME SELECT * FROM existing_historical
+            """
+
+        conn.execute(f'CREATE OR REPLACE TABLE "_scd2_result" AS {merged_sql}')
+        count_row = conn.execute('SELECT count(*) FROM "_scd2_result"').fetchone()
+        rows = int(count_row[0]) if count_row else 0
+        current_row = conn.execute(
+            'SELECT count(*) FROM "_scd2_result" WHERE _dex_is_current'
+        ).fetchone()
+        current_rows = int(current_row[0]) if current_row else 0
+        log.info(
+            "scd2 merge computed",
+            pipeline=name,
+            total_rows=rows,
+            current_rows=current_rows,
+        )
+        arrow_reader = conn.execute('SELECT * FROM "_scd2_result"').to_arrow_reader(100_000)
+        # schema_mode="overwrite" — needed the first time scd_type is turned on
+        # for a table that already exists (its on-disk schema predates the
+        # _dex_valid_from/_dex_valid_to/_dex_is_current/_dex_row_hash columns).
+        if not storage.write(arrow_reader, output_name, schema_mode="overwrite"):
+            msg = f"pipeline '{name}': SCD2 delta write failed — see prior log for cause"
+            raise PipelineError(msg)
         return rows
 
     def _post_load_hooks(

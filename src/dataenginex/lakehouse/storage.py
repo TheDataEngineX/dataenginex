@@ -305,19 +305,41 @@ class DeltaStorage(StorageBackend):
             import pyarrow as _pa  # noqa: PLC0415
             from deltalake import write_deltalake  # noqa: PLC0415
 
-            records = self._to_records(data)
-            if not records:
-                logger.warning("no records to write", path=path)
-                return False
-            arrow_table = _pa.Table.from_pylist(records)
+            # write_deltalake() accepts a pyarrow.Table natively — skip the
+            # to_records()/from_pylist() round-trip for callers that already
+            # have Arrow data (e.g. PipelineRunner), which for large tables
+            # (millions of rows) would otherwise box every cell as a Python
+            # object twice for no benefit.
+            count: int | str
+            if isinstance(data, _pa.RecordBatchReader):
+                # Streamed straight through — never materialized as a single
+                # Table on either side, so row count is unknown until the
+                # writer has consumed it.
+                arrow_table = data
+                count = "streaming"
+            elif isinstance(data, _pa.Table):
+                if data.num_rows == 0:
+                    logger.warning("no records to write", path=path)
+                    return False
+                arrow_table = data
+                count = arrow_table.num_rows
+            else:
+                records = self._to_records(data)
+                if not records:
+                    logger.warning("no records to write", path=path)
+                    return False
+                arrow_table = _pa.Table.from_pylist(records)
+                count = len(records)
             table_path = self._table_path(path)
+            logger.info("write_deltalake starting", count=count, path=table_path)
             write_deltalake(
                 table_path,
                 arrow_table,
                 mode=kwargs.pop("mode", self.mode),
                 **kwargs,
             )
-            logger.info("wrote delta records", count=len(records), path=table_path)
+            logger.info("write_deltalake finished", count=count, path=table_path)
+            logger.info("wrote delta records", count=count, path=table_path)
             return True
         except Exception as exc:
             logger.error("delta storage write failed", exc=str(exc))
