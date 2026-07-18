@@ -79,8 +79,13 @@ def _make_lakehouse_query(lakehouse_dir: Path) -> Callable[[str], list[dict[str,
                 for pf in sorted(layer_path.glob("*.parquet")):
                     safe = str(pf).replace("'", "''")
                     with contextlib.suppress(Exception):
+                        # TABLE, not VIEW: a view over read_parquet() is evaluated
+                        # lazily, so it would still need file access at query time —
+                        # after enable_external_access=false locks that down below,
+                        # even this legitimate read would fail. Materializing here,
+                        # while file access is still allowed, avoids that.
                         conn.execute(
-                            f"CREATE OR REPLACE VIEW {pf.stem}"
+                            f"CREATE OR REPLACE TABLE {pf.stem}"
                             f" AS SELECT * FROM read_parquet('{safe}')"
                         )
                 for delta_dir in sorted(path for path in layer_path.iterdir() if path.is_dir()):
@@ -93,9 +98,9 @@ def _make_lakehouse_query(lakehouse_dir: Path) -> Callable[[str], list[dict[str,
                             delta_dir.name
                         )
                         conn.execute(
-                            f'CREATE OR REPLACE VIEW "{delta_dir.name}" AS SELECT * FROM {scan}'
+                            f'CREATE OR REPLACE TABLE "{delta_dir.name}" AS SELECT * FROM {scan}'
                         )
-            # Lock the connection down to the views already registered above —
+            # Lock the connection down to the tables already materialized above —
             # untrusted `sql` below can no longer touch the filesystem/network.
             conn.execute("SET enable_external_access=false")
             result = conn.execute(sql)

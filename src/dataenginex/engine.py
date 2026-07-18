@@ -15,6 +15,7 @@ and persists all state to ``.dex/store.duckdb`` alongside ``dex.yaml``.
 from __future__ import annotations
 
 import contextlib
+import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -72,7 +73,11 @@ class DexBackend(Protocol):
     def lineage(self) -> Any: ...
 
     def run_pipeline(
-        self, name: str, *, progress_cb: Any = None, checkpoint_cb: Any = None,
+        self,
+        name: str,
+        *,
+        progress_cb: Any = None,
+        checkpoint_cb: Any = None,
     ) -> Any: ...
     def pipeline_stats(self) -> dict[str, int]: ...
     def pipeline_last_run(self, name: str) -> Any | None: ...
@@ -248,7 +253,11 @@ class DexEngine:
     # -------------------------------------------------------------------------
 
     def run_pipeline(
-        self, name: str, *, progress_cb: Any = None, checkpoint_cb: Any = None,
+        self,
+        name: str,
+        *,
+        progress_cb: Any = None,
+        checkpoint_cb: Any = None,
     ) -> Any:
         import time
 
@@ -256,7 +265,9 @@ class DexEngine:
 
         start = time.monotonic()
         result: PipelineResult = self.pipeline_runner.run(
-            name, progress_cb=progress_cb, checkpoint_cb=checkpoint_cb,
+            name,
+            progress_cb=progress_cb,
+            checkpoint_cb=checkpoint_cb,
         )
         duration_ms = (time.monotonic() - start) * 1000
 
@@ -1126,6 +1137,7 @@ class DexEngine:
                     system_prompt=agent_cfg.system_prompt,
                     tools=tool_registry,
                     max_iterations=agent_cfg.max_iterations,
+                    timeout_seconds=agent_cfg.timeout_seconds,
                     name=name,
                 )
                 logger.info("agent initialized", agent=name)
@@ -1138,11 +1150,12 @@ class DexEngine:
             from dataenginex.ai.observability.metrics import AgentMetrics
             from dataenginex.ai.runtime.sandbox import Sandbox
 
-            self.ai_memory = ShortTermMemory(max_entries=200)
+            max_entries = int(os.getenv("DEX_AI_MEMORY_MAX_ENTRIES", "100"))
+            self.ai_memory = ShortTermMemory(max_entries=max_entries)
             self.ai_metrics = AgentMetrics()
             self.sandbox = Sandbox()
             self._init_model_router()
-            logger.info("AI layer initialized")
+            logger.info("AI layer initialized", memory_max_entries=max_entries)
         except Exception:
             logger.warning("AI layer init failed")
 

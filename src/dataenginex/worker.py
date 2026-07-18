@@ -142,6 +142,7 @@ async def run_agent(ctx: dict[str, Any], agent_name: str, message: str) -> dict[
             system_prompt=cfg.system_prompt,
             tools=tool_registry,
             max_iterations=cfg.max_iterations,
+            timeout_seconds=cfg.timeout_seconds,
             name=agent_name,
         )
         result: dict[str, Any] = await agent.run(message)

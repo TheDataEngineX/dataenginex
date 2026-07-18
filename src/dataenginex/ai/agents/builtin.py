@@ -9,6 +9,7 @@ Implements a ReAct-style agent loop:
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import structlog
@@ -42,6 +43,7 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
         system_prompt: str = "You are a helpful data engineering assistant.",
         tools: ToolRegistry | None = None,
         max_iterations: int = 10,
+        timeout_seconds: float | None = None,
         name: str = "builtin",
         **kwargs: Any,
     ) -> None:
@@ -49,6 +51,11 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
         self._system_prompt = system_prompt
         self._tools = tools or tool_registry
         self._max_iterations = max_iterations
+        # Aggregate budget across the whole run() loop — falls back to the
+        # LLM provider's own per-call timeout (a reasonable ceiling for a
+        # single iteration) when the agent config doesn't set one explicitly.
+        llm_timeout = getattr(getattr(llm, "config", None), "timeout_seconds", None)
+        self._timeout_seconds = timeout_seconds if timeout_seconds is not None else llm_timeout
         self._name = name
         self._history: list[dict[str, str]] = []
 
@@ -61,8 +68,13 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
 
         tool_calls = 0
         iterations = 0
+        deadline = (
+            time.monotonic() + self._timeout_seconds if self._timeout_seconds is not None else None
+        )
 
         for i in range(self._max_iterations):
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             iterations = i + 1
             step_result = await self.step(message, iteration=i, **kwargs)
 
@@ -82,11 +94,14 @@ class BuiltinAgentRuntime(BaseAgentRuntime):
             tool_calls += 1
             message = step_result.get("observation", "")
 
-        # Hit max iterations
-        final = "I've reached my reasoning limit. Here's what I have so far."
+        # Hit the wall-clock budget or max_iterations without a final answer
+        if deadline is not None and time.monotonic() >= deadline:
+            final = "I ran out of time reasoning about this. Here's what I have so far."
+        else:
+            final = "I've reached my reasoning limit. Here's what I have so far."
         self._history.append({"role": "assistant", "content": final})
-        ai_agent_iterations.labels(agent=self._name).observe(self._max_iterations)
-        return {"response": final, "iterations": self._max_iterations, "tool_calls": tool_calls}
+        ai_agent_iterations.labels(agent=self._name).observe(iterations)
+        return {"response": final, "iterations": iterations, "tool_calls": tool_calls}
 
     async def step(self, message: str, **kwargs: Any) -> dict[str, Any]:
         """Execute one reasoning step."""

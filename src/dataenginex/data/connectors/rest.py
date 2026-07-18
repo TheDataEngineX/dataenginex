@@ -68,7 +68,13 @@ class RestApiConnector(BaseConnector):
         self._client: httpx.Client | None = None
 
     def connect(self) -> None:
-        self._client = httpx.Client(headers=self._headers, timeout=self._timeout)
+        # ponytail: httpx native retry transport — 3 retries on connection errors
+        transport = httpx.HTTPTransport(retries=3)
+        self._client = httpx.Client(
+            headers=self._headers,
+            timeout=self._timeout,
+            transport=transport,
+        )
         logger.debug("rest connector ready", url=self._url)
 
     def disconnect(self) -> None:

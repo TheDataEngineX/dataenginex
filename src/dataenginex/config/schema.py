@@ -102,6 +102,7 @@ class PipelineConfig(FrozenModel):
     publish_to: list[str] = Field(default_factory=list)
     orm_sink: dict[str, str] | None = None
     schedule: str | None = None  # cron expression
+    on_failure: Literal["fail", "skip", "stale"] = "fail"  # ponytail: fail-fast default
 
 
 class DataConfig(FrozenModel):
@@ -197,6 +198,7 @@ class CollectionConfig(FrozenModel):
     """A named vector collection."""
 
     source: str | None = None  # pipeline that populates it
+    column: str | None = None  # text column on the source table to embed
     embedding_model: str | None = None  # override default
     chunk_size: int = 512
     chunk_overlap: int = 50
@@ -210,6 +212,12 @@ class AgentConfig(FrozenModel):
     tools: list[str] = Field(default_factory=list)
     model: str | None = None  # override default LLM
     max_iterations: int = 10
+    # Aggregate wall-clock budget across the whole run() loop. Per-call LLM
+    # timeouts (LLMConfig.timeout_seconds) bound a single request, not the
+    # sum of up to max_iterations of them — without this, a caller-side
+    # timeout (e.g. dex-studio's HTTP request deadline) can never actually
+    # fire before the loop finishes on its own.
+    timeout_seconds: float | None = None
     memory: Literal["short_term", "episodic", "long_term"] = "short_term"
 
 

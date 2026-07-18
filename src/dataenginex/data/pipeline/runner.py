@@ -30,7 +30,11 @@ from dataenginex.config.schema import (
     TransformStepConfig,
 )
 from dataenginex.core.exceptions import PipelineError, PipelineStepError
-from dataenginex.core.resources import duckdb_memory_limit
+from dataenginex.core.resources import (
+    duckdb_memory_limit,
+    note_duckdb_connection_closed,
+    note_duckdb_connection_opened,
+)
 from dataenginex.data.connectors import connector_registry
 
 # Import to trigger registration
@@ -125,6 +129,25 @@ def _summarize_step(step: TransformStepConfig) -> str:
     return step.type
 
 
+def _verify_parquet(path: Path, expected_rows: int, name: str) -> None:
+    """Verify parquet file is readable and row count matches."""
+    import pyarrow.parquet as pq
+
+    try:
+        meta = pq.read_metadata(str(path))
+        if meta.num_rows != expected_rows:
+            msg = (
+                f"pipeline '{name}': row count mismatch — "
+                f"wrote {expected_rows}, parquet has {meta.num_rows}"
+            )
+            raise PipelineError(msg)
+    except PipelineError:
+        raise
+    except Exception as exc:
+        msg = f"pipeline '{name}': parquet validation failed — {exc}"
+        raise PipelineError(msg) from exc
+
+
 class PipelineRunner:
     """Execute data pipelines defined in dex.yaml.
 
@@ -215,17 +238,25 @@ class PipelineRunner:
         # so a 100M+-row bronze table (e.g. IMDB principals) has nowhere to
         # go but the process heap and OOMs the container outright.
         db_path = self._tmp_dir / f"{pipeline_name}.duckdb"
+        note_duckdb_connection_opened()
         conn = duckdb.connect(
             str(db_path),
             config={
                 "temp_directory": str(self._tmp_dir),
                 "memory_limit": duckdb_memory_limit(),
+                "preserve_insertion_order": "false",
             },
         )
 
         try:
-            return self._execute(conn, pipeline_name, pipeline_config, log,
-                                progress_cb=progress_cb, checkpoint_cb=checkpoint_cb)
+            return self._execute(
+                conn,
+                pipeline_name,
+                pipeline_config,
+                log,
+                progress_cb=progress_cb,
+                checkpoint_cb=checkpoint_cb,
+            )
         except (PipelineError, PipelineStepError, KeyError):
             raise
         except Exception as e:
@@ -233,6 +264,7 @@ class PipelineRunner:
             return PipelineResult(pipeline=pipeline_name, success=False, error=str(e))
         finally:
             conn.close()
+            note_duckdb_connection_closed()
             db_path.unlink(missing_ok=True)
             db_path.with_suffix(".duckdb.wal").unlink(missing_ok=True)
 
@@ -246,13 +278,56 @@ class PipelineRunner:
         }
         order = resolve_execution_order(dep_graph)
         results: dict[str, PipelineResult] = {}
+        # Names whose output can't be trusted — failed outright, or skipped
+        # because an upstream dependency is itself in this set (propagates
+        # transitively since `order` is already topologically sorted).
+        unavailable: set[str] = set()
 
         for name in order:
+            cfg = self._config.data.pipelines.get(name)
+            blocking = [dep for dep in (cfg.depends_on if cfg else []) if dep in unavailable]
+            if blocking:
+                logger.warning(
+                    "pipeline skipped — upstream dependency unavailable",
+                    pipeline=name,
+                    depends_on=blocking,
+                )
+                unavailable.add(name)
+                results[name] = PipelineResult(
+                    pipeline=name,
+                    success=False,
+                    skipped=True,
+                    error=f"upstream dependency unavailable: {blocking}",
+                )
+                continue
+
             result = self.run(name)
             results[name] = result
             if not result.success:
-                logger.error("pipeline failed — stopping", pipeline=name)
-                break
+                unavailable.add(name)
+                # ponytail: per-pipeline failure policy — skip/stale/fail
+                policy = cfg.on_failure if cfg else "fail"
+                if policy == "skip":
+                    logger.warning("pipeline failed — skipping (on_failure=skip)", pipeline=name)
+                    continue
+                elif policy == "stale":
+                    output_name = (cfg.destination or name) if cfg else name
+                    parquet_path, delta_dir = self._find_lakehouse_output(output_name)
+                    if parquet_path is None and delta_dir is None:
+                        logger.warning(
+                            "pipeline failed — on_failure=stale but no prior output exists to keep",
+                            pipeline=name,
+                        )
+                    else:
+                        logger.warning(
+                            "pipeline failed — keeping stale output (on_failure=stale)",
+                            pipeline=name,
+                            path=str(parquet_path or delta_dir),
+                        )
+                    continue
+                else:
+                    logger.error("pipeline failed — stopping", pipeline=name)
+                    break
 
         return results
 
@@ -269,6 +344,7 @@ class PipelineRunner:
             raise KeyError(msg)
         cfg = pipelines[pipeline_name]
         log = logger.bind(pipeline=pipeline_name, mode="preview")
+        note_duckdb_connection_opened()
         conn = duckdb.connect(
             ":memory:",
             config={
@@ -329,6 +405,7 @@ class PipelineRunner:
             }
         finally:
             conn.close()
+            note_duckdb_connection_closed()
 
     # -------------------------------------------------------------------------
     # Internal pipeline steps
@@ -657,16 +734,28 @@ class PipelineRunner:
             cols = conn.execute(f"DESCRIBE SELECT * FROM read_parquet('{safe}')").fetchall()
             existing_cols = {c[0] for c in cols}
             exclude_cols = [
-                c for c in (
-                    "_dex_ingested_at", "_dex_pipeline", "_dex_layer", "_dex_source",
-                    "_dex_row_hash", "_dex_valid_from", "_dex_valid_to", "_dex_is_current"
-                ) if c in existing_cols
+                c
+                for c in (
+                    "_dex_ingested_at",
+                    "_dex_pipeline",
+                    "_dex_layer",
+                    "_dex_source",
+                    "_dex_row_hash",
+                    "_dex_valid_from",
+                    "_dex_valid_to",
+                    "_dex_is_current",
+                )
+                if c in existing_cols
             ]
             exclude_sql = ", ".join(exclude_cols) if exclude_cols else ""
             if exclude_sql:
-                conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * EXCLUDE ({exclude_sql}) FROM read_parquet('{safe}')")
+                conn.execute(
+                    f"CREATE OR REPLACE TABLE bronze AS SELECT * EXCLUDE ({exclude_sql}) FROM read_parquet('{safe}')"
+                )
             else:
-                conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * FROM read_parquet('{safe}')")
+                conn.execute(
+                    f"CREATE OR REPLACE TABLE bronze AS SELECT * FROM read_parquet('{safe}')"
+                )
         else:
             assert delta_dir is not None  # narrowed by the guard above
             found_path = delta_dir
@@ -682,14 +771,24 @@ class PipelineRunner:
                 cols = conn.execute(f"DESCRIBE SELECT * FROM {scan} LIMIT 0").fetchall()
                 existing_cols = {c[0] for c in cols}
                 exclude_cols = [
-                    c for c in (
-                        "_dex_ingested_at", "_dex_pipeline", "_dex_layer", "_dex_source",
-                        "_dex_row_hash", "_dex_valid_from", "_dex_valid_to", "_dex_is_current"
-                    ) if c in existing_cols
+                    c
+                    for c in (
+                        "_dex_ingested_at",
+                        "_dex_pipeline",
+                        "_dex_layer",
+                        "_dex_source",
+                        "_dex_row_hash",
+                        "_dex_valid_from",
+                        "_dex_valid_to",
+                        "_dex_is_current",
+                    )
+                    if c in existing_cols
                 ]
                 exclude_sql = ", ".join(exclude_cols) if exclude_cols else ""
                 if exclude_sql:
-                    conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * EXCLUDE ({exclude_sql}) FROM {scan}")
+                    conn.execute(
+                        f"CREATE OR REPLACE TABLE bronze AS SELECT * EXCLUDE ({exclude_sql}) FROM {scan}"
+                    )
                 else:
                     conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * FROM {scan}")
             except Exception:
@@ -921,6 +1020,8 @@ class PipelineRunner:
             log.info("delta load: DeltaStorage.write returned")
         else:
             conn.execute(f"COPY ({select_with_meta}) TO '{output_path}' (FORMAT PARQUET)")
+        if target_format == "parquet" and output_path.exists():
+            _verify_parquet(output_path, rows, name)
         log.info(
             "load complete",
             layer=target_layer,

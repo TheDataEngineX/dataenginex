@@ -32,7 +32,11 @@ import pyarrow.dataset as ds
 import structlog
 
 from dataenginex.core.interfaces import BaseConnector
-from dataenginex.core.resources import duckdb_memory_limit
+from dataenginex.core.resources import (
+    duckdb_memory_limit,
+    note_duckdb_connection_closed,
+    note_duckdb_connection_opened,
+)
 from dataenginex.data.connectors import connector_registry
 
 logger = structlog.get_logger()
@@ -119,6 +123,10 @@ class HttpConnector(BaseConnector):
             raw_str = str(raw_path).replace("'", "''")
             out_str = str(tmp_dest).replace("'", "''")
 
+            # This connection may be nested inside a pipeline run that already
+            # holds its own DuckDB connection open (PipelineRunner.run) —
+            # note it so duckdb_memory_limit() sizes both down accordingly.
+            note_duckdb_connection_opened()
             con = duckdb.connect(":memory:", config={"memory_limit": duckdb_memory_limit()})
             try:
                 varchar_clause = ", all_varchar=true" if self._all_varchar else ""
@@ -139,6 +147,7 @@ class HttpConnector(BaseConnector):
                 rows = int(row[0]) if row else 0
             finally:
                 con.close()
+                note_duckdb_connection_closed()
 
             tmp_dest.rename(dest)
 

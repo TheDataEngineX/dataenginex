@@ -99,8 +99,11 @@ class SseConnector(BaseConnector):
             # connect timeout is short; read timeout must be None so sparse SSE
             # streams don't abort between events during the collection window.
             sse_timeout = httpx.Timeout(connect=self._timeout, read=None, write=None, pool=None)
+            transport = httpx.HTTPTransport(retries=3)
             with (
-                httpx.Client(headers=self._headers, timeout=sse_timeout) as client,
+                httpx.Client(
+                    headers=self._headers, timeout=sse_timeout, transport=transport
+                ) as client,
                 client.stream("GET", self._url) as response,
             ):
                 response.raise_for_status()
