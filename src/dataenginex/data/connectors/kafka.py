@@ -121,7 +121,13 @@ class KafkaConnector(BaseConnector):
                 {
                     **client_config,
                     "group.id": self._group_id,
-                    "auto.offset.reset": "latest",
+                    # "earliest": this connector backs scheduled, independently
+                    # run producer/consumer pipelines (not a long-lived consumer
+                    # group) — "latest" would skip everything published before
+                    # this exact run subscribes. Auto-commit (confluent-kafka's
+                    # default) advances the offset per run, so later runs still
+                    # only see what's new since the last one.
+                    "auto.offset.reset": "earliest",
                 }
             )
             self._consumer.subscribe([self._topic])
