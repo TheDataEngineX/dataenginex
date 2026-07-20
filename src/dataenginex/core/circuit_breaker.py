@@ -39,9 +39,11 @@ class CircuitBreaker:
 
     @property
     def state(self) -> State:
-        if self._state == State.OPEN:
-            if time.monotonic() - self._last_failure_time >= self._recovery_timeout:
-                self._state = State.HALF_OPEN
+        if (
+            self._state == State.OPEN
+            and time.monotonic() - self._last_failure_time >= self._recovery_timeout
+        ):
+            self._state = State.HALF_OPEN
         return self._state
 
     def allow(self) -> bool:

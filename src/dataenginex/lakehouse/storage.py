@@ -336,6 +336,14 @@ class DeltaStorage(StorageBackend):
                 table_path,
                 arrow_table,
                 mode=kwargs.pop("mode", self.mode),
+                # Bronze captures external API/source data as-is, and those
+                # shapes drift over time (e.g. an optional nested field only
+                # some records have) — without schema evolution, the first
+                # batch whose inferred schema doesn't exactly match the
+                # existing table's fixed schema hard-fails the whole write,
+                # rather than additively picking up the new field. Callers
+                # writing to schema-stable tables can still override this.
+                schema_mode=kwargs.pop("schema_mode", "merge"),
                 **kwargs,
             )
             logger.info("write_deltalake finished", count=count, path=table_path)

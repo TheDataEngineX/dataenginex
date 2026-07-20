@@ -6,7 +6,7 @@ Storage backends, data catalog, and partitioning strategies for lakehouse-style 
 
 ```python
 from dataenginex.lakehouse import (
-    LocalParquetStorage,
+    ParquetStorage,
     StorageFormat,
     DataCatalog,
     PartitionStrategy,
@@ -19,22 +19,20 @@ ______________________________________________________________________
 
 `dataenginex.lakehouse.storage`
 
-Pluggable storage backends for reading and writing datasets across local, S3, GCS, and Delta Lake targets. `LocalParquetStorage` ships by default; cloud backends require `dataenginex[cloud]`.
+Pluggable storage backends for reading and writing datasets across local, S3, GCS, and Delta Lake targets. `ParquetStorage` ships by default (falls back to `JsonStorage` when `pyarrow` isn't installed); cloud backends require `dataenginex[cloud]`.
 
 ::: dataenginex.lakehouse.storage
 
-**Key classes:** `LocalParquetStorage`, `StorageFormat`
+**Key classes:** `ParquetStorage`, `JsonStorage`, `StorageFormat`
 
 ```python
-from dataenginex.lakehouse.storage import LocalParquetStorage, StorageFormat
+from dataenginex.lakehouse.storage import ParquetStorage, StorageFormat
 
-storage = LocalParquetStorage(
+storage = ParquetStorage(
     base_path="data/gold",
-    format=StorageFormat.PARQUET,
-    compression="snappy",
+    compression="zstd",
 )
-storage.write(df, partition_by=["year", "month"])
-df_back = storage.read("events", filters=[("year", "=", 2024)])
+storage.write(records, path="events", format=StorageFormat.PARQUET)
 ```
 
 ______________________________________________________________________
@@ -43,19 +41,22 @@ ______________________________________________________________________
 
 `dataenginex.lakehouse.catalog`
 
-Dataset catalog — registers, discovers, and resolves named datasets to their storage locations. Persisted to DuckDB.
+Dataset catalog — registers, discovers, and resolves named datasets to their storage locations. `DataCatalog` is a thin facade over `DexStore`, so it's persisted to SQLite (WAL mode), not a JSON file or DuckDB.
 
 ::: dataenginex.lakehouse.catalog
 
 **Key class:** `DataCatalog`
 
 ```python
-from dataenginex.lakehouse.catalog import DataCatalog
+from dataenginex.lakehouse.catalog import DataCatalog, CatalogEntry
 
-catalog = DataCatalog(db_path=".dex/store.duckdb")
-catalog.register("events_gold", path="data/gold/events", format="parquet")
+# persist_path=... for a dedicated SQLite file, or store=engine.store to
+# share the engine's DexStore and avoid a second DB file
+catalog = DataCatalog(persist_path=".dex/catalog.db")
+
+catalog.register(CatalogEntry(name="events_gold", layer="gold", format="parquet", location="data/gold/events"))
 entry = catalog.get("events_gold")
-print(entry.path, entry.row_count)
+print(entry.location, entry.record_count)
 ```
 
 ______________________________________________________________________
@@ -64,15 +65,15 @@ ______________________________________________________________________
 
 `dataenginex.lakehouse.partitioning`
 
-Partition strategy definitions (Hive-style, date-based, hash) and helpers for computing partition keys from DataFrames.
+Partition strategy definitions (date-based, hash-based) and helpers for computing partition keys/paths from a record.
 
 ::: dataenginex.lakehouse.partitioning
 
-**Key classes:** `PartitionStrategy`, `HivePartitioner`, `DatePartitioner`
+**Key classes:** `PartitionStrategy`, `DatePartitioner`, `HashPartitioner`
 
 ```python
-from dataenginex.lakehouse.partitioning import HivePartitioner
+from dataenginex.lakehouse.partitioning import HashPartitioner
 
-partitioner = HivePartitioner(columns=["year", "month", "day"])
-partitioned = partitioner.partition(df, base_path="data/silver/events")
+partitioner = HashPartitioner(fields=["user_id"], n_buckets=16)
+path = partitioner.partition_path({"user_id": "u-123"}, base="data/silver/events")
 ```

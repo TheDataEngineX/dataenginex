@@ -47,12 +47,24 @@ def duckdb_memory_limit() -> str:
     ``note_duckdb_connection_opened()``/``note_duckdb_connection_closed()``.
     When this is the only connection open (the common case — e.g.
     max_concurrent_pipelines=1) we can safely use 50% of container RAM. When
-    another connection is already open at the same time — e.g. a pipeline's
-    own DuckDB connection is still open while its HttpConnector opens a
-    second, nested one to convert a downloaded file — 30% each keeps both
-    from summing past the container's RAM.
+    more connections are open at the same time — e.g. several pipelines
+    genuinely executing in parallel, or a pipeline's own DuckDB connection
+    still open while its HttpConnector opens a second, nested one — the
+    shared ~60%-of-RAM DuckDB budget is divided by however many connections
+    are actually open, so the SUM of every connection's own cap stays within
+    the container's real ceiling.
+
+    Previously this was a flat "30% each if more than one is open" — correct
+    for exactly 2 concurrent connections, but with N>2 (e.g. 4 pipelines
+    genuinely running in parallel, which never happened before the pipeline
+    executor was serialized to one worker) each still independently claimed
+    30%, summing to well over 100% of the container's actual RAM and
+    crashing the process (observed live: a 6.5GB-limited container OOMing
+    inside DuckDB at "1.8 GiB/1.8 GiB used" — 30% of 6.5GB — while 4
+    connections were open at once).
     """
-    fraction = 0.30 if _active_connections > 1 else 0.50
+    concurrent = max(1, _active_connections)
+    fraction = min(0.50, 0.60 / concurrent)
     for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
         try:
             raw = Path(path).read_text().strip()

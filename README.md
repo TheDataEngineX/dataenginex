@@ -18,7 +18,7 @@ pip install dataenginex                  # lean base — DuckDB, structlog, Pyda
 ```python
 from dataenginex.engine import DexEngine
 
-engine = DexEngine("dex.yaml")           # loads config, inits DuckDB store, wires backends
+engine = DexEngine("dex.yaml")           # loads config, inits SQLite store, wires backends
 engine.run_pipeline("clean_users")       # execute a pipeline
 models = engine.model_registry.list_models()
 response = engine.agents["assistant"].chat("summarise the latest run")
@@ -52,14 +52,14 @@ ______________________________________________________________________
 | --- | --- | --- |
 | Data engine | DuckDB | PySpark (`[data]`) |
 | Storage | Local parquet + DuckDB | S3, GCS, BigQuery (`[cloud]`) |
-| Lineage | DuckDB / JSON | Postgres (`[postgres]`) |
+| Lineage | JSON / SQLite | Postgres (`[postgres]`) |
 | Scheduler | croniter | — |
 | ML training | scikit-learn wrapper (`[ml]`) | XGBoost (`[ml]`) |
 | ML tracking | JSON-based | MLflow (`[tracking]`) |
 | LLM providers | Ollama, OpenAI, Anthropic | Any OpenAI-compatible URL |
-| Vector store | DuckDB VSS + in-memory | Qdrant (`[qdrant]`) |
+| Vector store | in-memory | Qdrant (`[qdrant]`) |
 | Retrieval | BM25 + dense + hybrid | — |
-| Persistence | DuckDB (`.dex/store.duckdb`) | — |
+| Persistence | SQLite, WAL mode (`.dex/store.duckdb`) | — |
 | Logging | structlog | — |
 | Privacy | PrivacyGuard — PII detection, masking strategies, outbound call audit | — |
 | Connectors | CSV, Parquet, DuckDB, REST, HTTP, Kafka | PySpark (`[data]`), dbt CLI (`[data]`), Delta (`[delta]`), PostgreSQL (`[postgres]`) |
@@ -76,7 +76,7 @@ src/dataenginex/
 ├── config/             # dex.yaml schema, loader
 ├── core/               # Base ABCs, registry, exceptions
 ├── engine.py           # DexEngine — entry point
-├── store.py            # DexStore — DuckDB persistence
+├── store.py            # DexStore — SQLite (WAL) persistence
 ├── api/                # Pydantic response models (no HTTP server)
 ├── data/               # Connectors, pipeline runner, transforms, quality
 ├── ml/                 # Classical ML: training, registry, serving, drift

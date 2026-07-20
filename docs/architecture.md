@@ -17,7 +17,7 @@ graph TB
     DexEngine --> Data["Data Layer<br/>Connectors · Transforms · Quality<br/>Orchestrator · Feature Store"]
     DexEngine --> ML["ML Layer<br/>Tracker · Training · Serving<br/>Drift · Metrics"]
     DexEngine --> AI["AI Layer<br/>LLM Provider · Retriever · Vector Store<br/>Agent Runtime · Memory"]
-    Data --> Store["DexStore<br/>DuckDB — .dex/store.duckdb<br/>pipeline_runs · lineage · model_artifacts"]
+    Data --> Store["DexStore<br/>SQLite (WAL) — .dex/store.duckdb<br/>pipeline_runs · lineage · model_artifacts"]
     ML --> Store
     AI --> Store
 ```
@@ -51,7 +51,7 @@ class CsvConnector(BaseConnector):
 `DexEngine` is the single object applications instantiate. It:
 
 - Loads and validates `dex.yaml`
-- Initialises `DexStore` (creates `.dex/store.duckdb` next to the config file)
+- Initialises `DexStore` (creates the SQLite-backed `.dex/store.duckdb` file next to the config file)
 - Registers data sources, pipelines, ML trackers, AI providers, agents
 - Exposes domain methods: `run_pipeline`, `source_schema`, `warehouse_layers`, etc.
 
@@ -64,7 +64,7 @@ engine.run_pipeline("clean_users")
 
 ### DexStore — Persistence
 
-Single DuckDB file at `.dex/store.duckdb` (project-local, next to `dex.yaml`).
+Single SQLite (WAL mode) file at `.dex/store.duckdb` (project-local, next to `dex.yaml`).
 Tables: `pipeline_runs`, `lineage_events`, `model_artifacts`, `quality_runs`,
 `audit_log`, `ai_memory`, `ai_episodes`, `catalog_entries`.
 
@@ -91,7 +91,7 @@ DataEngineXError
 | Module | Purpose |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `engine.py` | `DexEngine` — application entry point |
-| `store.py` | `DexStore` — DuckDB persistence layer |
+| `store.py` | `DexStore` — SQLite (WAL) persistence layer |
 | `config/` | Schema, loader, env resolution |
 | `core/` | ABCs, registry, exceptions |
 | `cli/` | `dex` CLI (validate, version, init) |
@@ -118,7 +118,7 @@ DataEngineXError
 | LLM Provider | Ollama, OpenAI, Anthropic | LiteLLM (install separately) |
 | Vector Store | DuckDB VSS | Qdrant (`[qdrant]`) |
 | Retrieval | BM25 + Dense + Hybrid | — |
-| Persistence | DuckDB | S3/GCS/BigQuery (`[cloud]`) |
+| Persistence | SQLite (WAL) | S3/GCS/BigQuery (`[cloud]`) |
 | Logging | structlog | — |
 | Config | Pydantic + YAML | — |
 | CLI | Click | — |

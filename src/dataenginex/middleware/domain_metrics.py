@@ -21,7 +21,7 @@ __all__ = [
 ]
 
 pipeline_runs_total = Counter(
-    "dex_pipeline_runs_total",
+    "dex_domain_pipeline_runs_total",
     "Total pipeline runs",
     ["pipeline", "status"],
 )

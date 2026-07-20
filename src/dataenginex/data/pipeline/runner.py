@@ -134,7 +134,7 @@ def _verify_parquet(path: Path, expected_rows: int, name: str) -> None:
     import pyarrow.parquet as pq
 
     try:
-        meta = pq.read_metadata(str(path))
+        meta = pq.read_metadata(str(path))  # type: ignore[no-untyped-call]
         if meta.num_rows != expected_rows:
             msg = (
                 f"pipeline '{name}': row count mismatch — "
@@ -238,11 +238,22 @@ class PipelineRunner:
         # so a 100M+-row bronze table (e.g. IMDB principals) has nowhere to
         # go but the process heap and OOMs the container outright.
         db_path = self._tmp_dir / f"{pipeline_name}.duckdb"
+        # Own spill subdirectory per pipeline (not the shared self._tmp_dir):
+        # DuckDB's temp_directory spill files are named by an internal
+        # per-connection counter (e.g. "S32K-0.tmp"), so two connections
+        # pointed at the same folder — a concurrently-running pipeline, or
+        # even the next sequential run before the prior connection's temp
+        # files are fully cleaned up — can collide on the same filename and
+        # corrupt each other's spill state (observed live: "IO Error: Could
+        # not read enough bytes from ... duckdb_temp_storage_S32K-0.tmp",
+        # crashing the process).
+        spill_dir = self._tmp_dir / pipeline_name / "spill"
+        spill_dir.mkdir(parents=True, exist_ok=True)
         note_duckdb_connection_opened()
         conn = duckdb.connect(
             str(db_path),
             config={
-                "temp_directory": str(self._tmp_dir),
+                "temp_directory": str(spill_dir),
                 "memory_limit": duckdb_memory_limit(),
                 "preserve_insertion_order": "false",
             },
@@ -344,11 +355,15 @@ class PipelineRunner:
             raise KeyError(msg)
         cfg = pipelines[pipeline_name]
         log = logger.bind(pipeline=pipeline_name, mode="preview")
+        # Separate spill subdirectory from run()'s (and from other pipelines')
+        # — see the collision comment on run()'s connect() call above.
+        preview_spill_dir = self._tmp_dir / pipeline_name / "preview_spill"
+        preview_spill_dir.mkdir(parents=True, exist_ok=True)
         note_duckdb_connection_opened()
         conn = duckdb.connect(
             ":memory:",
             config={
-                "temp_directory": str(self._tmp_dir),
+                "temp_directory": str(preview_spill_dir),
                 "memory_limit": duckdb_memory_limit(),
             },
         )
@@ -449,7 +464,7 @@ class PipelineRunner:
                 pipeline=name, success=True, rows_input=0, rows_output=0, steps_completed=0
             )
 
-        content_hash = self._content_hash(conn)
+        content_hash = self._content_hash(conn, cfg)
         if content_hash is not None and self._load_content_hashes().get(name) == content_hash:
             log.info(
                 "pipeline skipped — source unchanged since last run",
@@ -519,21 +534,40 @@ class PipelineRunner:
                     conn.execute(f'CREATE OR REPLACE VIEW "{dd.name}" AS SELECT * FROM {scan}')
         log.debug("lakehouse views registered")
 
-    def _content_hash(self, conn: duckdb.DuckDBPyConnection, table: str = "bronze") -> str | None:
-        """Cheap order-independent signature of *table*'s current contents.
+    def _content_hash(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        cfg: PipelineConfig | None = None,
+        table: str = "bronze",
+    ) -> str | None:
+        """Cheap order-independent signature of *table* plus every dependency.
 
         Uses DuckDB's native per-row hash() combined with bit_xor() — a single
         columnar aggregate pass, not a Python-side row-by-row hash — so this
         stays cheap even for the largest sources (tens of millions of rows).
+
+        A pipeline's transform SQL can reference tables beyond its declared
+        `source` via raw joins (see silver_entity_resolution); those tables
+        are exactly what `depends_on` enumerates, so fold them into the
+        signature too — otherwise the pipeline looks unchanged and gets
+        skipped whenever only a joined table changed.
         """
-        try:
-            row = conn.execute(f'SELECT count(*), bit_xor(hash(t)) FROM "{table}" t').fetchone()
-        except Exception:
-            return None
-        if row is None:
-            return None
-        count, xor_hash = row
-        return f"{count}:{xor_hash}"
+        tables = [table]
+        if cfg is not None:
+            tables += [dep for dep in cfg.depends_on if dep != cfg.source]
+        parts = []
+        for dep_table in tables:
+            try:
+                row = conn.execute(
+                    f'SELECT count(*), bit_xor(hash(t)) FROM "{dep_table}" t'
+                ).fetchone()
+            except Exception:
+                continue
+            if row is None:
+                continue
+            count, xor_hash = row
+            parts.append(f"{dep_table}:{count}:{xor_hash}")
+        return "|".join(parts) if parts else None
 
     def _load_content_hashes(self) -> dict[str, str]:
         if not self._content_hash_file.exists():
@@ -750,7 +784,8 @@ class PipelineRunner:
             exclude_sql = ", ".join(exclude_cols) if exclude_cols else ""
             if exclude_sql:
                 conn.execute(
-                    f"CREATE OR REPLACE TABLE bronze AS SELECT * EXCLUDE ({exclude_sql}) FROM read_parquet('{safe}')"
+                    f"CREATE OR REPLACE TABLE bronze AS SELECT * "
+                    f"EXCLUDE ({exclude_sql}) FROM read_parquet('{safe}')"
                 )
             else:
                 conn.execute(
@@ -787,7 +822,8 @@ class PipelineRunner:
                 exclude_sql = ", ".join(exclude_cols) if exclude_cols else ""
                 if exclude_sql:
                     conn.execute(
-                        f"CREATE OR REPLACE TABLE bronze AS SELECT * EXCLUDE ({exclude_sql}) FROM {scan}"
+                        f"CREATE OR REPLACE TABLE bronze AS SELECT * "
+                        f"EXCLUDE ({exclude_sql}) FROM {scan}"
                     )
                 else:
                     conn.execute(f"CREATE OR REPLACE TABLE bronze AS SELECT * FROM {scan}")
@@ -892,6 +928,17 @@ class PipelineRunner:
             custom_sql=resolved_sql,
         )
         outcome = "pass" if result.passed else "fail"
+        self._record_quality_gates(name, q, outcome)
+        self._record_quality_lineage(conn, name, table, result)
+        if not result.passed:
+            raise PipelineStepError(
+                step="quality",
+                cause=self._quality_failure_reasons(q, result),
+                pipeline=name,
+            )
+        log.info("quality gate passed")
+
+    def _record_quality_gates(self, name: str, q: Any, outcome: str) -> None:
         for gate, configured in (
             ("completeness", q.completeness is not None),
             ("uniqueness", q.uniqueness is not None),
@@ -903,42 +950,55 @@ class PipelineRunner:
                     pipeline=name, gate=gate, result=outcome
                 ).inc()
 
-        # Record quality result as a lineage event for full observability.
-        if self._lineage is not None:
-            quality_score = (
-                result.completeness_score * result.uniqueness_score
-                if result.completeness_score < 1.0 or result.uniqueness_score < 1.0
-                else 1.0
-            )
-            count_row = conn.execute(f"SELECT count(*) FROM {table}").fetchone()
-            row_count = int(count_row[0]) if count_row else 0
-            self._lineage.record(
-                operation="quality",
-                layer=_infer_layer(name),
-                source=table,
-                destination=f"{_infer_layer(name)}/{name}",
-                input_count=row_count,
-                output_count=row_count if result.passed else 0,
-                pipeline_name=name,
-                step_name="quality_gate",
-                quality_score=round(quality_score, 4),
-                metadata={
-                    "passed": result.passed,
-                    "completeness": round(result.completeness_score, 4),
-                    "uniqueness": round(result.uniqueness_score, 4),
-                    "custom_passed": result.custom_passed,
-                    "schema_violations": result.schema_violations,
-                    **result.details,
-                },
-            )
+    def _record_quality_lineage(
+        self, conn: duckdb.DuckDBPyConnection, name: str, table: str, result: Any
+    ) -> None:
+        if self._lineage is None:
+            return
+        quality_score = (
+            result.completeness_score * result.uniqueness_score
+            if result.completeness_score < 1.0 or result.uniqueness_score < 1.0
+            else 1.0
+        )
+        count_row = conn.execute(f"SELECT count(*) FROM {table}").fetchone()
+        row_count = int(count_row[0]) if count_row else 0
+        self._lineage.record(
+            operation="quality",
+            layer=_infer_layer(name),
+            source=table,
+            destination=f"{_infer_layer(name)}/{name}",
+            input_count=row_count,
+            output_count=row_count if result.passed else 0,
+            pipeline_name=name,
+            step_name="quality_gate",
+            quality_score=round(quality_score, 4),
+            metadata={
+                "passed": result.passed,
+                "completeness": round(result.completeness_score, 4),
+                "uniqueness": round(result.uniqueness_score, 4),
+                "custom_passed": result.custom_passed,
+                "schema_violations": result.schema_violations,
+                **result.details,
+            },
+        )
 
-        if not result.passed:
-            msg = (
-                f"Quality gate failed: completeness={result.completeness_score:.2f}, "
-                f"uniqueness={result.uniqueness_score:.2f}"
+    def _quality_failure_reasons(self, q: Any, result: Any) -> str:
+        reasons: list[str] = []
+        if q.completeness is not None and result.completeness_score < q.completeness:
+            reasons.append(f"completeness={result.completeness_score:.4f} < {q.completeness}")
+        if q.uniqueness is not None and result.uniqueness_score < 1.0:
+            reasons.append(
+                f"uniqueness={result.uniqueness_score:.4f} (duplicates on {q.uniqueness})"
             )
-            raise PipelineStepError(step="quality", cause=msg, pipeline=name)
-        log.info("quality gate passed")
+        if q.custom_sql is not None and not result.custom_passed:
+            reasons.append("custom_sql check returned false/zero rows")
+        if result.schema_violations:
+            reasons.append("schema: " + "; ".join(result.schema_violations))
+        if "row_count_min" in result.details:
+            reasons.append(
+                f"row_count={result.details['row_count']} < min {result.details['row_count_min']}"
+            )
+        return "Quality gate failed: " + ("; ".join(reasons) if reasons else "unknown reason")
 
     def _load(
         self,

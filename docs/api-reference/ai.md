@@ -10,9 +10,9 @@ from dataenginex.ai import (
     LLMProvider, LLMResponse,
     BuiltinAgentRuntime,
     BuiltinRetriever,
-    VectorStore,
     SandboxConfig,
 )
+from dataenginex.ai.vectorstore import InMemoryBackend, QdrantBackend, RAGPipeline
 ```
 
 ______________________________________________________________________
@@ -50,9 +50,12 @@ Routes LLM requests to the appropriate provider based on cost, latency, capabili
 
 ```python
 from dataenginex.ai.routing.router import ModelRouter
+from dataenginex.ai.routing.anthropic import AnthropicProvider
+from dataenginex.ai.routing.ollama import OllamaProvider
 
-router = ModelRouter.from_config(engine.config)
-response = router.complete("Explain this error.", model_hint="fast")
+router = ModelRouter(providers={"anthropic": AnthropicProvider(), "ollama": OllamaProvider()})
+provider = router.route("Explain this error.", complexity="complex")
+response = provider.generate("Explain this error.")
 ```
 
 ### Providers
@@ -90,18 +93,18 @@ ______________________________________________________________________
 
 `dataenginex.ai.vectorstore`
 
-Embedding storage and similarity search. Defaults to in-process DuckDB VSS; swap for Qdrant via `dataenginex[qdrant]`.
+Embedding storage and similarity search. `InMemoryBackend` (brute-force cosine similarity) is the default; swap in `QdrantBackend` via `dataenginex[qdrant]` for a persistent, production-scale store. `RAGPipeline` combines a backend with an embedding function to support ingest + retrieve.
 
 ::: dataenginex.ai.vectorstore
 
-**Key class:** `VectorStore`
+**Key classes:** `InMemoryBackend`, `QdrantBackend`, `RAGPipeline`
 
 ```python
-from dataenginex.ai.vectorstore import VectorStore
+from dataenginex.ai.vectorstore import InMemoryBackend, RAGPipeline
 
-store = VectorStore(db_path=".dex/store.duckdb")
-store.upsert("doc-1", embedding=[0.1, 0.2, ...], metadata={"source": "wiki"})
-results = store.search(query_embedding, top_k=5)
+rag = RAGPipeline(store=InMemoryBackend(dimension=384))
+rag.ingest(["doc1 text", "doc2 text"])
+results = rag.query("How do I deploy to K8s?", top_k=3)
 ```
 
 ______________________________________________________________________

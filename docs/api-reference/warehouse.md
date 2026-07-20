@@ -5,37 +5,29 @@ SQL-style transforms and persistent data lineage tracking for warehouse workload
 ## Quick import
 
 ```python
-from dataenginex.warehouse import (
-    SqlTransformRunner,
-    LineageTracker,
-    LineageEvent,
-)
+from dataenginex.data.transforms import transform_registry
+from dataenginex.warehouse.lineage import PersistentLineage, LineageEvent
 ```
 
 ______________________________________________________________________
 
 ## Transforms
 
-`dataenginex.warehouse.transforms`
+`dataenginex.data.transforms.sql`
 
-SQL transform runner for warehouse-layer batch transformations. Executes DuckDB SQL with named input/output dataset binding, supports CTEs and multi-statement scripts.
+DuckDB SQL-based transforms for pipeline steps (`filter`, `derive`, `cast`, `deduplicate`, `sql`, `rename`, `drop_columns`, `fill_null`, `aggregate`, `window`, `explode`, `json_normalize`). Each transform registers itself into `transform_registry`; the `PipelineRunner` looks transforms up by their config `type` and chains them: `input_table -> transform1 -> transform2 -> ...`.
 
-::: dataenginex.warehouse.transforms
+::: dataenginex.data.transforms.sql
 
-**Key class:** `SqlTransformRunner`
+**Key registry:** `transform_registry` (from `dataenginex.data.transforms`)
 
 ```python
-from dataenginex.warehouse.transforms import SqlTransformRunner
+from dataenginex.data.transforms import transform_registry
 
-runner = SqlTransformRunner(db_path=".dex/store.duckdb")
-runner.run(
-    sql="""
-    CREATE OR REPLACE TABLE gold.user_summary AS
-    SELECT user_id, COUNT(*) AS events, MAX(ts) AS last_seen
-    FROM silver.events
-    GROUP BY 1
-    """,
-)
+# Look up a transform class by its config "type" key
+cls = transform_registry.get("aggregate")
+transform = cls(group_by=["user_id"], agg_exprs={"events": "COUNT(*)"})
+output_table = transform.apply(conn, input_table="silver_events")
 ```
 
 ______________________________________________________________________
@@ -44,24 +36,33 @@ ______________________________________________________________________
 
 `dataenginex.warehouse.lineage`
 
-Column-level and dataset-level data lineage tracking. Records source → transform → destination relationships to DuckDB for audit and impact analysis.
+Column-level and dataset-level data lineage tracking. Records source → transform → destination relationships for audit and impact analysis. `PersistentLineage` persists to a local JSON file; `PostgresLineage` persists to PostgreSQL (falls back to `PersistentLineage` when `asyncpg`/the database is unavailable).
 
 ::: dataenginex.warehouse.lineage
 
-**Key classes:** `LineageTracker`, `LineageEvent`, `LineageNode`
+**Key classes:** `PersistentLineage`, `PostgresLineage`, `LineageEvent`
 
 ```python
-from dataenginex.warehouse.lineage import LineageTracker
+from dataenginex.warehouse.lineage import PersistentLineage
 
-tracker = LineageTracker(db_path=".dex/store.duckdb")
+lineage = PersistentLineage("data/lineage.json")
 
-tracker.record(
-    source="silver.events",
-    transform="user_summary_agg",
-    destination="gold.user_summary",
-    columns={"user_id": ["user_id"], "events": ["event_id"]},
+ev = lineage.record(
+    operation="ingest",
+    layer="bronze",
+    source="events_api",
+    input_count=1250,
+    output_count=1250,
+)
+lineage.record(
+    operation="transform",
+    layer="silver",
+    parent_id=ev.event_id,
+    input_count=1250,
+    output_count=1200,
+    quality_score=0.88,
 )
 
-upstream = tracker.upstream("gold.user_summary")
-downstream = tracker.downstream("silver.events")
+upstream_chain = lineage.get_chain(ev.event_id)
+by_pipeline = lineage.get_by_pipeline("clean_users")
 ```

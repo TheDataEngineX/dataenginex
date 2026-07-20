@@ -47,7 +47,7 @@ result = engine.model_registry.predict("churn_model", features)
 # AI — chat with an agent over your data
 response = engine.agents["assistant"].chat("summarise the latest pipeline run")
 
-# Persistence — query DuckDB-backed history
+# Persistence — query SQLite-backed history
 runs = engine.store.list_pipeline_runs(limit=10)
 ```
 
@@ -70,7 +70,7 @@ from dataenginex.ai.vectorstore import VectorStoreBackend
 | Module | Description |
 | --- | --- |
 | `dataenginex.engine` | `DexEngine` — single entry point; loads config, inits store, wires backends |
-| `dataenginex.store` | `DexStore` — DuckDB-backed persistence (`.dex/store.duckdb`) |
+| `dataenginex.store` | `DexStore` — SQLite (WAL) persistence (`.dex/store.duckdb`) |
 | `dataenginex.config` | `dex.yaml` schema, loader, env-var resolution |
 | `dataenginex.core` | Exceptions, `Base*` ABCs, `BackendRegistry` |
 | `dataenginex.cli` | `dex` CLI (`validate`, `version`, `init`) |

@@ -9,7 +9,8 @@ Usage::
     engine.close()
 
 The engine initialises all subsystems (data, ML, AI) from the config file
-and persists all state to ``.dex/store.duckdb`` alongside ``dex.yaml``.
+and persists all state to the SQLite-backed ``.dex/store.duckdb`` file
+alongside ``dex.yaml``.
 """
 
 from __future__ import annotations
@@ -132,8 +133,8 @@ class DexEngine:
     """Local dataenginex engine — direct library access, no HTTP.
 
     Initialises all subsystems from a ``dex.yaml`` config file.
-    All persistent state is stored in ``.dex/store.duckdb`` next to the
-    config file.
+    All persistent state is stored in the SQLite-backed ``.dex/store.duckdb``
+    file (see :class:`~dataenginex.store.DexStore`) next to the config file.
 
     Args:
         config_path: Path to a ``dex.yaml`` file.
@@ -1001,6 +1002,50 @@ class DexEngine:
                 error=str(exc),
             )
             return {}
+
+    def trigger_ai_index_refresh(self) -> None:
+        """Re-index gold-layer movie data into the lexical (Elasticsearch) backend.
+
+        Called by the scheduler after a pipeline configured with
+        ``trigger_ai_index_refresh: true`` in ``on_pipeline_complete``
+        completes. Never raises: a missing backend, missing source table, or
+        ES outage all degrade to a no-op, matching ElasticsearchBackend's own
+        reliability contract — a lexical-index refresh failure must never
+        break the pipeline run that triggered it.
+        """
+        backend = self._lexical_backends.get("movies")
+        if backend is None:
+            return
+        try:
+            from dataenginex.ai.tools import tool_registry
+            from dataenginex.ai.vectorstore import Document
+
+            rows = tool_registry.call(
+                "query",
+                sql=(
+                    "SELECT movie_id, title, overview, genres, release_year, "
+                    "imdb_rating FROM gold_tmdb_enriched_movies"
+                ),
+            )
+            if not isinstance(rows, list) or not rows:
+                return
+            docs = [
+                Document(
+                    id=str(row["movie_id"]),
+                    text=" ".join(str(v) for v in (row.get("title"), row.get("overview")) if v),
+                    metadata={
+                        "title": row.get("title") or "",
+                        "genres": row.get("genres") or "",
+                        "release_year": row.get("release_year"),
+                        "imdb_rating": row.get("imdb_rating"),
+                    },
+                )
+                for row in rows
+                if row.get("movie_id") is not None
+            ]
+            backend.index(docs)
+        except Exception as exc:
+            logger.warning("ai index refresh failed", error=str(exc))
 
     def _ingest_lakehouse_to_vector_store(self) -> None:
         """Embed and index gold/silver tables into the vector store on startup."""

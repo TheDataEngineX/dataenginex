@@ -13,7 +13,7 @@ Goal is to save Claude code tokens for lower cost without losing quality.
 |---------|----------|---------|
 | `dataenginex` | `src/dataenginex/` | Core library — config, registry, CLI, pipelines, ML, AI, PrivacyGuard |
 
-**Stack:** Python 3.13+ · DuckDB · structlog · Pydantic · Click · pyarrow · croniter · httpx · prometheus-client · uv · Ruff · mypy strict · pytest
+**Stack:** Python 3.13+ · DuckDB · SQLite (WAL, persistence store) · structlog · Pydantic · Click · pyarrow · croniter · httpx · prometheus-client · uv · Ruff · mypy strict · pytest
 
 **Version:** `uv run poe version`
 
