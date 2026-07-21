@@ -11,7 +11,9 @@ import pyarrow.parquet as pq
 import pytest
 
 from dataenginex.api.graphql import GoldTable, build_schema
-from dataenginex.lakehouse.storage import DeltaStorage
+
+deltalake = pytest.importorskip("deltalake")
+from dataenginex.lakehouse.storage import DeltaStorage  # noqa: E402
 
 
 class _FakeEngine:
