@@ -12,6 +12,36 @@ permissions:
   security-events: write
 
 jobs:
-  security:
-    uses: TheDataEngineX/.github/.github/workflows/reusable-security.yml@main
-    secrets: inherit
+  trivy-security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run Trivy repo security scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: misconfig,secret
+          format: sarif
+          output: trivy-repo-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+
+      - name: Upload Trivy repo results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-repo-results.sarif
+
+      - name: Enforce Trivy misconfig gate (HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: misconfig
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '1'
