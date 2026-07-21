@@ -40,6 +40,12 @@ cmd = "ruff format src/ tests/"
 [tool.poe.tasks.autofix]
 shell = "ruff check --fix src/ tests/ && ruff format src/ tests/"
 
+[tool.poe.tasks.mdformat]
+shell = "mdformat --check docs/ README.md src/dataenginex/README.md CLAUDE.md"
+
+[tool.poe.tasks.mdformat-fix]
+shell = "mdformat docs/ README.md src/dataenginex/README.md CLAUDE.md"
+
 [tool.poe.tasks.lint-fix]
 sequence = ["autofix"]
 

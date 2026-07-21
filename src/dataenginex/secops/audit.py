@@ -10,12 +10,14 @@ and testable without external infrastructure.
 
 Thread-safety: SQLite WAL mode with per-thread connections.  Multiple
 threads in dex-studio's web server can call ``AuditLogger.log()``
-concurrently without races.  The previous DuckDB backend had an explicit
-"not thread-safe" disclaimer and a racy ``_seq`` integer counter.
+concurrently without races — WAL mode allows concurrent readers alongside
+a single writer, and each thread's own connection means there is no
+shared, racy sequence counter to protect.
 """
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import threading
 from dataclasses import dataclass, field
@@ -295,7 +297,5 @@ class AuditLogger:
         self._backend.close()
 
     def __del__(self) -> None:
-        import contextlib  # noqa: PLC0415
-
         with contextlib.suppress(Exception):
             self.close()

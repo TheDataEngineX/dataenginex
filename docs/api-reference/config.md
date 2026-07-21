@@ -57,7 +57,7 @@ ______________________________________________________________________
 
 `dataenginex.config.settings`
 
-Runtime settings sourced from environment variables (`.env` or system env). Covers API keys, storage paths, log level, and feature flags.
+Runtime settings sourced from environment variables (`.env` or system env). Declares typed fields for well-known vars (e.g. `tmdb_api_key`); any other `.env`/env var is still picked up and exposed via `as_env_dict()` for `${VAR}` interpolation in `dex.yaml`.
 
 ::: dataenginex.config.settings
 
@@ -67,8 +67,8 @@ Runtime settings sourced from environment variables (`.env` or system env). Cove
 from dataenginex.config.settings import DexSettings
 
 settings = DexSettings()
-print(settings.log_level)       # "INFO"
-print(settings.dex_store_path)  # ".dex/store.duckdb"
+print(settings.tmdb_api_key)          # "" unless TMDB_API_KEY is set
+print(settings.get("SOME_ENV_VAR"))   # case-insensitive lookup across .env + os.environ
 ```
 
 See `.env.template` in the project root for all available settings.

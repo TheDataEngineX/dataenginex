@@ -95,6 +95,12 @@ class BuiltinRetriever(BaseRetriever):
         vector_store: A VectorStoreBackend for dense search.
         embed_fn: Callable that maps text → embedding vector.
         documents: Initial documents to index.
+        lexical_backend: Optional ``LexicalSearchBackend`` (e.g.
+            ``ElasticsearchBackend``) for real lexical search in hybrid mode.
+            When configured, hybrid fuses dense + lexical results. If the
+            backend's health check fails or ``search()`` errors, hybrid
+            silently degrades to dense (vector-only) results — an ES outage
+            never fails retrieval.
     """
 
     def __init__(
@@ -103,11 +109,13 @@ class BuiltinRetriever(BaseRetriever):
         vector_store: Any = None,
         embed_fn: Any = None,
         documents: list[dict[str, Any]] | None = None,
+        lexical_backend: Any = None,
         **kwargs: Any,
     ) -> None:
         self._strategy = strategy
         self._store = vector_store
         self._embed_fn = embed_fn
+        self._lexical = lexical_backend
         self._bm25 = _BM25()
         self._docs: list[dict[str, Any]] = []
         if documents:
@@ -126,6 +134,19 @@ class BuiltinRetriever(BaseRetriever):
                     documents=[doc.get("text", "")],
                     metadata=[doc.get("metadata", {})],
                 )
+        if self._lexical is not None:
+            from dataenginex.ai.vectorstore import Document
+
+            self._lexical.index(
+                [
+                    Document(
+                        id=str(doc.get("id", "")),
+                        text=doc.get("text", ""),
+                        metadata=doc.get("metadata", {}),
+                    )
+                    for doc in documents
+                ]
+            )
         logger.info("documents indexed", count=len(documents), strategy=self._strategy)
 
     def retrieve(
@@ -157,7 +178,6 @@ class BuiltinRetriever(BaseRetriever):
         return [{**r, "method": "dense"} for r in results]
 
     def _hybrid(self, query: str, top_k: int) -> list[dict[str, Any]]:
-        sparse_results = self._bm25.score(query, top_k * 2)
         if self._store is not None and self._embed_fn is not None:
             embedding = self._embed_fn(query)
             dense_raw = self._store.search(embedding, top_k=top_k * 2)
@@ -165,8 +185,45 @@ class BuiltinRetriever(BaseRetriever):
         else:
             dense_results = []
 
+        if self._lexical is not None:
+            lexical_results = self._lexical_indices(query, top_k * 2)
+            if lexical_results is not None:
+                fused = _rrf(dense_results, lexical_results)[:top_k]
+            else:
+                # ponytail: ES down/erroring — degrade to vector-only rather
+                # than fail hybrid retrieval outright.
+                fused = dense_results[:top_k]
+            return [{**self._docs[idx], "score": score, "method": "hybrid"} for idx, score in fused]
+
+        sparse_results = self._bm25.score(query, top_k * 2)
         fused = _rrf(sparse_results, dense_results)[:top_k]
         return [{**self._docs[idx], "score": score, "method": "hybrid"} for idx, score in fused]
+
+    def _lexical_indices(self, query: str, top_k: int) -> list[tuple[int, float]] | None:
+        """Query the lexical backend, mapping hits back to doc indices.
+
+        Returns None (never raises) on any failure so the caller can fall
+        back to vector-only results.
+        """
+        try:
+            if not self._lexical.health_check():
+                logger.warning("lexical backend health check failed — using vector-only results")
+                return None
+            hits = self._lexical.search(query, top_k=top_k)
+        except Exception as exc:
+            logger.warning("lexical search errored — using vector-only results", error=str(exc))
+            return None
+
+        if not hits:
+            return None
+
+        by_id = {str(doc.get("id", "")): i for i, doc in enumerate(self._docs)}
+        mapped: list[tuple[int, float]] = []
+        for hit in hits:
+            idx = by_id.get(hit.document.id)
+            if idx is not None:
+                mapped.append((idx, hit.score))
+        return mapped
 
     def _map_dense_to_indices(
         self,

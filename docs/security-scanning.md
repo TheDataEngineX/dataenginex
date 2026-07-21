@@ -7,7 +7,6 @@ DataEngineX uses a multi-layered security scanning pipeline across CI/CD workflo
 | Tool | Purpose | Workflow |
 |------|---------|----------|
 | **Trivy** | Repository misconfiguration & secret scanning | `security.yml` |
-| **Trivy** | Container image vulnerability scanning | `docker build` (local) |
 | **CodeQL** | Static analysis (Python + GitHub Actions) | `security.yml` |
 | **pip-audit** | Python dependency vulnerability audit | `poe security` |
 | **CycloneDX** | SBOM generation (attached to releases) | `release-*.yml` |
@@ -20,15 +19,6 @@ DataEngineX uses a multi-layered security scanning pipeline across CI/CD workflo
 1. **Trivy repo scan** — scans the filesystem for misconfigurations and leaked secrets (SARIF uploaded to GitHub Security tab).
 1. **Trivy misconfig gate** — fails the build if HIGH or CRITICAL misconfigurations are found.
 1. **CodeQL** — static analysis for Python code and GitHub Actions workflows.
-
-### Local Container Scan
-
-1. **Trivy container scan** — run manually to scan the built Docker image for OS and library vulnerabilities:
-
-   ```bash
-   docker build -t dex:local .
-   trivy image dex:local
-   ```
 
 ### On Release (release.yml)
 

@@ -21,10 +21,10 @@ engine = DexEngine("dex.yaml")
 
 ## Metrics
 
-Prometheus metrics are exposed via `dataenginex.observability.metrics`:
+Prometheus metrics are exposed via `dataenginex.middleware.metrics`:
 
 ```python
-from dataenginex.observability.metrics import (
+from dataenginex.middleware.metrics import (
     HTTP_REQUESTS_TOTAL,
     HTTP_REQUEST_DURATION_SECONDS,
     PIPELINE_RUN_DURATION,

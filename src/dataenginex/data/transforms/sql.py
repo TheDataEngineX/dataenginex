@@ -345,3 +345,101 @@ class WindowTransform(BaseTransform):
         if not self._expression:
             errors.append("window requires an expression")
         return errors
+
+
+@transform_registry.decorator("explode")
+class ExplodeTransform(BaseTransform):
+    """Explode a LIST column into one row per element (array un-nesting).
+
+    Accepts a dot-separated path to explode a LIST nested inside a STRUCT
+    column (e.g. "credits.cast" for a STRUCT column `credits` with a LIST
+    field `cast`), as well as a plain top-level LIST column (e.g. "genres").
+
+    Rows whose array is empty or NULL are dropped by DuckDB's UNNEST — same
+    default semantic as Spark's explode().
+
+    The top-level column named by the first path segment is dropped from
+    the output (its exploded field replaces it) — sibling fields of a
+    struct are not preserved; this transform explodes only what you ask for.
+    If you need to explode multiple fields from the same struct (e.g. both
+    credits.cast and credits.crew), explode into separate downstream tables
+    from independent copies of the source, or explode the outer struct
+    first and re-derive each field — exploding the same struct column twice
+    in one pipeline chain fails, since the first explode drops it entirely.
+
+    Config: {type: explode, options: {column: "credits.cast", alias: "credit"}}
+    """
+
+    def __init__(self, column: str, alias: str | None = None, **kwargs: Any) -> None:
+        self._path = column.split(".")
+        self._top_level_column = self._path[0]
+        self._alias = alias or self._path[-1]
+
+    def apply(self, conn: duckdb.DuckDBPyConnection, input_table: str) -> str:
+        output = f"{input_table}_exploded"
+        all_cols = [row[0] for row in conn.execute(f"DESCRIBE {input_table}").fetchall()]
+        keep = [c for c in all_cols if c != self._top_level_column]
+        keep_sql = ", ".join(f'"{c}"' for c in keep)
+        path_sql = ".".join(f'"{p}"' for p in self._path)
+        path_description = conn.execute(
+            f"DESCRIBE SELECT {path_sql} AS _value FROM {input_table}"
+        ).fetchone()
+        if path_description is None:
+            raise ValueError(f"explode column {'.'.join(self._path)!r} was not found")
+        path_type = str(path_description[1])
+        if not (path_type.endswith("[]") or path_type.startswith("LIST(")):
+            msg = f"explode column {'.'.join(self._path)!r} must be a LIST, got {path_type}"
+            raise ValueError(msg)
+        prefix = f"{keep_sql}, " if keep_sql else ""
+        conn.execute(
+            f"CREATE OR REPLACE TABLE {output} AS "
+            f'SELECT {prefix}UNNEST({path_sql}) AS "{self._alias}" '
+            f"FROM {input_table}"
+        )
+        count_row = conn.execute(f"SELECT count(*) FROM {output}").fetchone()
+        count = int(count_row[0]) if count_row else 0
+        logger.info("explode applied", column=".".join(self._path), output_rows=count)
+        return output
+
+    def validate(self) -> list[str]:
+        if not self._path[0].strip():
+            return ["explode requires a column name"]
+        return []
+
+
+@transform_registry.decorator("json_normalize")
+class JsonNormalizeTransform(BaseTransform):
+    """Flatten a DuckDB STRUCT column into regular columns."""
+
+    def __init__(self, column: str, prefix: str = "", **kwargs: Any) -> None:
+        self._column = column
+        self._prefix = prefix
+
+    def apply(self, conn: duckdb.DuckDBPyConnection, input_table: str) -> str:
+        output = f"{input_table}_normalized"
+        column = self._column.replace('"', '""')
+        fields = [
+            str(row[0])
+            for row in conn.execute(
+                f'DESCRIBE SELECT UNNEST("{column}") FROM {input_table}'
+            ).fetchall()
+        ]
+        if not fields:
+            msg = f"json_normalize column {self._column!r} has no fields"
+            raise ValueError(msg)
+
+        field_sql = ", ".join(
+            f'"{column}"."{field.replace(chr(34), chr(34) * 2)}" '
+            f'AS "{(self._prefix + field).replace(chr(34), chr(34) * 2)}"'
+            for field in fields
+        )
+        conn.execute(
+            f'CREATE OR REPLACE TABLE {output} AS SELECT * EXCLUDE ("{column}"), '
+            f"{field_sql} FROM {input_table}"
+        )
+        return output
+
+    def validate(self) -> list[str]:
+        if not self._column.strip():
+            return ["json_normalize requires a column name"]
+        return []

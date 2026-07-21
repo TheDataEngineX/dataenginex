@@ -47,8 +47,11 @@ Execute SQL queries against local DuckDB databases or in-memory relations.
 ```python
 from dataenginex.data.connectors.duckdb import DuckDBConnector
 
-conn = DuckDBConnector(database=".dex/store.duckdb", query="SELECT * FROM events LIMIT 100")
-df = conn.fetch()
+# database can be a real DuckDB file or ":memory:" — NOT .dex/store.duckdb,
+# which is dataenginex's own SQLite (WAL) metadata store despite the filename
+conn = DuckDBConnector(database="data/warehouse.duckdb")
+conn.connect()
+rows = conn.read(table="events")
 ```
 
 ______________________________________________________________________
@@ -216,7 +219,7 @@ ______________________________________________________________________
 
 `dataenginex.data.pipeline.run_history`
 
-Persists pipeline run metadata (start time, duration, rows, status) to DuckDB.
+Persists pipeline run metadata (start time, duration, rows, status) to a local JSON file.
 
 ::: dataenginex.data.pipeline.run_history
 

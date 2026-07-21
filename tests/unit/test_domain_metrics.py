@@ -33,22 +33,30 @@ class TestMetricRegistration:
                 tenant_operations_total,
             )
         }
-        assert "dex_pipeline_runs" in names or "dex_pipeline_runs_total" in names
+        assert "dex_domain_pipeline_runs" in names or "dex_domain_pipeline_runs_total" in names
 
     def test_registry_exposes_dex_metrics(self) -> None:
         collected = list(REGISTRY.collect())
         metric_names = {m.name for m in collected}
         dex_metrics = {n for n in metric_names if n.startswith("dex_")}
-        assert "dex_pipeline_runs" in dex_metrics
+        assert "dex_domain_pipeline_runs" in dex_metrics
         assert "dex_ml_drift_score" in dex_metrics
         assert "dex_ai_tokens" in dex_metrics
 
 
 class TestPipelineMetrics:
     def test_counter_increments(self) -> None:
-        before = _counter_value("dex_pipeline_runs_total", {"pipeline": "t1", "status": "success"})
+        # Renamed from dex_pipeline_runs_total — that name collided with
+        # dex_studio/metrics.py's own (differently-labeled) counter of the
+        # same name; whichever module's Counter got constructed first won
+        # the registry slot, breaking the other's .labels() calls entirely.
+        before = _counter_value(
+            "dex_domain_pipeline_runs_total", {"pipeline": "t1", "status": "success"}
+        )
         pipeline_runs_total.labels(pipeline="t1", status="success").inc()
-        after = _counter_value("dex_pipeline_runs_total", {"pipeline": "t1", "status": "success"})
+        after = _counter_value(
+            "dex_domain_pipeline_runs_total", {"pipeline": "t1", "status": "success"}
+        )
         assert after == before + 1
 
     def test_histogram_observes(self) -> None:

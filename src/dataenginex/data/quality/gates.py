@@ -79,9 +79,17 @@ def _check_uniqueness(
     total_rows: int,
     result: QualityResult,
 ) -> None:
-    """Check that specified columns have no duplicates."""
+    """Check that specified columns have no duplicates.
+
+    Counts distinct *hashes* of the key columns rather than distinct composite
+    tuples — for wide/text-heavy tables, DISTINCT over the raw columns forces
+    DuckDB to materialize a hash table keyed on the full row content, which
+    can exceed available memory. Hashing first collapses each row to a fixed
+    8-byte key before the distinct count, at the cost of a statistically
+    negligible collision risk.
+    """
     key_cols = ", ".join(f'"{c}"' for c in columns)
-    distinct_row = conn.execute(f"SELECT count(DISTINCT ({key_cols})) FROM {table}").fetchone()
+    distinct_row = conn.execute(f"SELECT count(DISTINCT hash({key_cols})) FROM {table}").fetchone()
     distinct_count: int = int(distinct_row[0]) if distinct_row else 0
     score = distinct_count / total_rows if total_rows > 0 else 1.0
     result.uniqueness_score = score

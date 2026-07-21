@@ -21,11 +21,14 @@ from pathlib import Path
 from typing import Any, cast
 
 import structlog
+from arq.connections import RedisSettings
 
 logger = structlog.get_logger()
 
 _REDIS_URL = os.getenv("DEX_REDIS_URL", "redis://localhost:6379")
-_CONFIG_PATH = Path(os.getenv("DEX_CONFIG_PATH", "dex.yaml"))
+_CONFIG_PATH = Path(os.getenv("DEX_CONFIG_PATH", "dex.yaml")).resolve()
+_PROJECT_DIR = _CONFIG_PATH.parent
+_DEX_DIR = _PROJECT_DIR / ".dex"
 
 
 def _load_config() -> Any:
@@ -51,8 +54,13 @@ async def run_pipeline(ctx: dict[str, Any], pipeline_name: str) -> dict[str, Any
         from dataenginex.data.pipeline.runner import PipelineRunner
         from dataenginex.warehouse.lineage import PersistentLineage
 
-        lineage = PersistentLineage(".dex/lineage.json")
-        runner = PipelineRunner(config, lineage=lineage)
+        lineage = PersistentLineage(str(_DEX_DIR / "lineage.json"))
+        runner = PipelineRunner(
+            config,
+            data_dir=_DEX_DIR / "lakehouse",
+            project_dir=_PROJECT_DIR,
+            lineage=lineage,
+        )
         result = runner.run(pipeline_name)
         log.info("pipeline.job.done", success=result.success, rows=result.rows_output)
         return {
@@ -95,7 +103,7 @@ async def train_model(ctx: dict[str, Any], experiment_name: str) -> dict[str, An
             }
         from dataenginex.ml.training import train_experiment
 
-        metrics = train_experiment(config, experiment_name)
+        metrics = train_experiment(config, experiment_name, project_dir=_PROJECT_DIR)
         log.info("train.job.done", metrics=metrics)
         return {"success": True, "metrics": metrics, "error": None}
     except Exception as exc:
@@ -124,7 +132,10 @@ async def run_agent(ctx: dict[str, Any], agent_name: str, message: str) -> dict[
         from dataenginex.ai.tools import tool_registry
         from dataenginex.ai.tools.builtin import register_builtin_tools
 
-        register_builtin_tools()
+        register_builtin_tools(
+            lakehouse_dir=_DEX_DIR / "lakehouse",
+            models_dir=_DEX_DIR / "models",
+        )
         if agent_name not in config.ai.agents:
             return {
                 "response": "",
@@ -141,6 +152,7 @@ async def run_agent(ctx: dict[str, Any], agent_name: str, message: str) -> dict[
             system_prompt=cfg.system_prompt,
             tools=tool_registry,
             max_iterations=cfg.max_iterations,
+            timeout_seconds=cfg.timeout_seconds,
             name=agent_name,
         )
         result: dict[str, Any] = await agent.run(message)
@@ -165,16 +177,9 @@ class WorkerSettings:
     """
 
     functions = [run_pipeline, train_model, run_agent]
-    redis_settings_from_dsn = _REDIS_URL
+    redis_settings = RedisSettings.from_dsn(_REDIS_URL)
     max_jobs = 10
     job_timeout = 3600  # 1 hour max per job
     keep_result = 86400  # keep results for 24h
     retry_jobs = True
     max_tries = 3
-
-    @staticmethod
-    def redis_settings() -> Any:
-        """Return ARQ RedisSettings from the configured DSN."""
-        from arq.connections import RedisSettings
-
-        return RedisSettings.from_dsn(_REDIS_URL)

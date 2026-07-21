@@ -7,7 +7,9 @@ and provides a structured request/response contract for inference.
 
 from __future__ import annotations
 
+import os
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -20,6 +22,8 @@ __all__ = [
     "PredictionRequest",
     "PredictionResponse",
 ]
+
+_MAX_LOADED_MODELS = int(os.getenv("DEX_MAX_LOADED_MODELS", "3"))
 
 
 @dataclass
@@ -81,11 +85,15 @@ class ModelServer:
     ----------
     registry:
         A ``ModelRegistry`` instance (from ``dataenginex.ml.registry``).
+    max_loaded:
+        Maximum number of models to keep loaded in memory (LRU eviction).
+        Can be set via DEX_MAX_LOADED_MODELS env var (default: 3).
     """
 
-    def __init__(self, registry: Any = None) -> None:
+    def __init__(self, registry: Any = None, max_loaded: int | None = None) -> None:
         self._registry = registry
-        self._loaded: dict[str, Any] = {}  # "name:version" → model object
+        self._max_loaded = max_loaded if max_loaded is not None else _MAX_LOADED_MODELS
+        self._loaded: OrderedDict[str, Any] = OrderedDict()  # "name:version" → model object
 
     def load_model(self, name: str, version: str, model: Any) -> None:
         """Register a model object for serving.
@@ -100,8 +108,14 @@ class ModelServer:
             Any object with a ``predict(X)`` method.
         """
         key = f"{name}:{version}"
+        # LRU: move to end if exists, else add
+        if key in self._loaded:
+            del self._loaded[key]
+        elif len(self._loaded) >= self._max_loaded:
+            evicted = self._loaded.popitem(last=False)
+            logger.info("evicted model (LRU)", evicted=evicted[0])
         self._loaded[key] = model
-        logger.info("loaded model for serving", key=key)
+        logger.info("loaded model for serving", key=key, loaded_count=len(self._loaded))
 
     def predict(self, request: PredictionRequest) -> PredictionResponse:
         """Run inference for *request*."""
@@ -115,6 +129,9 @@ class ModelServer:
             raise RuntimeError(
                 f"Model {request.model_name} v{version} not loaded — call load_model() first"
             )
+
+        # LRU: mark as recently used
+        self._loaded.move_to_end(key)
 
         # Convert features to the format the model expects
         feature_values = self._features_to_array(request.features)

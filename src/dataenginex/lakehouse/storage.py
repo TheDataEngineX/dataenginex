@@ -305,19 +305,49 @@ class DeltaStorage(StorageBackend):
             import pyarrow as _pa  # noqa: PLC0415
             from deltalake import write_deltalake  # noqa: PLC0415
 
-            records = self._to_records(data)
-            if not records:
-                logger.warning("no records to write", path=path)
-                return False
-            arrow_table = _pa.Table.from_pylist(records)
+            # write_deltalake() accepts a pyarrow.Table natively — skip the
+            # to_records()/from_pylist() round-trip for callers that already
+            # have Arrow data (e.g. PipelineRunner), which for large tables
+            # (millions of rows) would otherwise box every cell as a Python
+            # object twice for no benefit.
+            count: int | str
+            if isinstance(data, _pa.RecordBatchReader):
+                # Streamed straight through — never materialized as a single
+                # Table on either side, so row count is unknown until the
+                # writer has consumed it.
+                arrow_table = data
+                count = "streaming"
+            elif isinstance(data, _pa.Table):
+                if data.num_rows == 0:
+                    logger.warning("no records to write", path=path)
+                    return False
+                arrow_table = data
+                count = arrow_table.num_rows
+            else:
+                records = self._to_records(data)
+                if not records:
+                    logger.warning("no records to write", path=path)
+                    return False
+                arrow_table = _pa.Table.from_pylist(records)
+                count = len(records)
             table_path = self._table_path(path)
+            logger.info("write_deltalake starting", count=count, path=table_path)
             write_deltalake(
                 table_path,
                 arrow_table,
                 mode=kwargs.pop("mode", self.mode),
+                # Bronze captures external API/source data as-is, and those
+                # shapes drift over time (e.g. an optional nested field only
+                # some records have) — without schema evolution, the first
+                # batch whose inferred schema doesn't exactly match the
+                # existing table's fixed schema hard-fails the whole write,
+                # rather than additively picking up the new field. Callers
+                # writing to schema-stable tables can still override this.
+                schema_mode=kwargs.pop("schema_mode", "merge"),
                 **kwargs,
             )
-            logger.info("wrote delta records", count=len(records), path=table_path)
+            logger.info("write_deltalake finished", count=count, path=table_path)
+            logger.info("wrote delta records", count=count, path=table_path)
             return True
         except Exception as exc:
             logger.error("delta storage write failed", exc=str(exc))
@@ -343,6 +373,32 @@ class DeltaStorage(StorageBackend):
         except Exception as exc:
             logger.error("delta storage read failed", exc=str(exc))
             return None
+
+    def file_uris(self, path: str) -> list[str]:
+        """Return the active Parquet files in the current Delta snapshot."""
+        if not _HAS_DELTALAKE:
+            return []
+        try:
+            from deltalake import DeltaTable  # noqa: PLC0415
+
+            table_path = self._table_path(path)
+            if not (Path(table_path) / "_delta_log").exists():
+                return []
+            return [str(uri) for uri in DeltaTable(table_path).file_uris()]
+        except Exception as exc:
+            logger.error("delta storage file listing failed", exc=str(exc))
+            return []
+
+    def parquet_scan_sql(self, path: str) -> str:
+        """Return a DuckDB relation expression for the current Delta snapshot."""
+        files = self.file_uris(path)
+        if not files:
+            raise FileNotFoundError(f"Delta table has no active Parquet files: {path}")
+        quoted = []
+        for file_uri in files:
+            safe_uri = file_uri.replace("'", "''")
+            quoted.append(f"'{safe_uri}'")
+        return f"read_parquet([{', '.join(quoted)}])"
 
     def delete(self, path: str) -> bool:
         """Remove the Delta table directory at *path* entirely."""

@@ -7,6 +7,7 @@ semantic search, pipeline status, etc.
 from __future__ import annotations
 
 import contextlib
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
 
 # Names available after register_builtin_tools() — used by the config validator.
 BUILTIN_TOOL_NAMES: frozenset[str] = frozenset(
-    {"query", "list_tools", "echo", "predict", "search_similar"}
+    {"query", "list_tools", "echo", "predict", "search_similar", "rag_search"}
 )
 
 logger = structlog.get_logger()
@@ -63,27 +64,87 @@ def _query_sql(sql: str, database: str = ":memory:") -> list[dict[str, Any]]:
         conn.close()
 
 
+_TABLE_REF_RE = re.compile(r"\b(?:FROM|JOIN)\s+\"?([A-Za-z_][A-Za-z0-9_]*)\"?", re.IGNORECASE)
+
+
+def _referenced_table_names(sql: str) -> set[str]:
+    """Best-effort extraction of table names a SELECT/WITH statement reads.
+
+    Not a real SQL parser — a regex over FROM/JOIN clauses — so it can miss
+    exotic syntax (e.g. a table name inside a subquery alias collision) or
+    over-match a CTE name as if it were a lakehouse table. Both failure
+    modes are safe here: a missed table just fails at materialization time
+    with its usual "table not found" error (same as before this existed); an
+    over-matched CTE name simply finds no matching file and is skipped.
+    """
+    return {m.group(1) for m in _TABLE_REF_RE.finditer(sql)}
+
+
+def _materialize_tables(conn: Any, layer_path: Path, names: set[str]) -> set[str]:
+    """Materialize tables from Parquet/Delta, return remaining names."""
+    remaining = set(names)
+    for name in list(remaining):
+        pf = layer_path / f"{name}.parquet"
+        if pf.exists():
+            safe = str(pf).replace("'", "''")
+            with contextlib.suppress(Exception):
+                conn.execute(
+                    f"CREATE OR REPLACE TABLE {name} AS SELECT * FROM read_parquet('{safe}')"
+                )
+                remaining.discard(name)
+            continue
+        delta_dir = layer_path / name
+        if delta_dir.is_dir() and (delta_dir / "_delta_log").exists():
+            with contextlib.suppress(Exception):
+                from dataenginex.lakehouse.storage import DeltaStorage
+
+                scan = DeltaStorage(base_path=str(layer_path)).parquet_scan_sql(name)
+                conn.execute(f'CREATE OR REPLACE TABLE "{name}" AS SELECT * FROM {scan}')
+                remaining.discard(name)
+    return remaining
+
+
 def _make_lakehouse_query(lakehouse_dir: Path) -> Callable[[str], list[dict[str, Any]]]:
-    """Return a query function that pre-registers all lakehouse parquet files as views."""
+    """Return a query function that materializes only the Parquet/Delta
+    tables each query actually references, not the whole lakehouse.
+
+    Earlier versions materialized every bronze/silver/gold table on every
+    call (a real OOM with tens-of-millions-of-row sources), then a 30s-TTL
+    cache reduced that to once per TTL window — but the *size* of a single
+    full materialization still grows with the lakehouse itself, so once
+    real data volumes were reached (e.g. bronze_titles at 12.6M rows, a
+    bronze_tmdb_movie_details batch with rich nested JSON per row), even one
+    materialization was enough to OOM a resource-constrained container.
+    Scoping to referenced tables only bounds cost to what a query actually
+    needs, regardless of how large the rest of the lakehouse grows.
+    """
+
+    def _materialize_all(conn: Any, names: set[str]) -> None:
+        remaining = set(names)
+        for layer in ("bronze", "silver", "gold"):
+            if not remaining:
+                return
+            layer_path = lakehouse_dir / layer
+            if not layer_path.exists():
+                continue
+            remaining = _materialize_tables(conn, layer_path, remaining)
 
     def _query_with_lakehouse(sql: str) -> list[dict[str, Any]]:
+        _require_read_only(sql)
         import duckdb
 
-        _require_read_only(sql)
+        # A fresh connection per call, not cached/reused: DuckDB refuses to
+        # re-enable external_access once disabled on a connection ("Cannot
+        # enable external access while database is running"), so a
+        # long-lived connection can only ever materialize tables it already
+        # knew about at creation time — defeating scoping to just what each
+        # query references. Scoping the materialization (below) instead of
+        # loading the whole lakehouse is what actually bounds the cost, so
+        # paying connection-setup overhead per call is cheap by comparison.
         conn = duckdb.connect(":memory:")
         try:
-            for layer in ("bronze", "silver", "gold"):
-                layer_path = lakehouse_dir / layer
-                if not layer_path.exists():
-                    continue
-                for pf in sorted(layer_path.glob("*.parquet")):
-                    safe = str(pf).replace("'", "''")
-                    with contextlib.suppress(Exception):
-                        conn.execute(
-                            f"CREATE OR REPLACE VIEW {pf.stem}"
-                            f" AS SELECT * FROM read_parquet('{safe}')"
-                        )
-            # Lock the connection down to the views already registered above —
+            _materialize_all(conn, _referenced_table_names(sql))
+            # Lock the connection down to the tables just materialized —
             # untrusted `sql` below can no longer touch the filesystem/network.
             conn.execute("SET enable_external_access=false")
             result = conn.execute(sql)
@@ -160,15 +221,37 @@ def _make_predict(
 def _make_search_similar(
     vector_store: Any,
     embed_fn: Any | None = None,
+    lexical_backend: Any = None,
 ) -> Callable[..., list[dict[str, Any]]]:
-    """Return a semantic search function backed by the shared vector store."""
+    """Return hybrid search backed by the vector store and optional lexical backend."""
 
     def _search_similar(query: str, top_k: int = 5) -> list[dict[str, Any]]:
         try:
-            from dataenginex.ai.vectorstore import RAGPipeline
+            from dataenginex.ai.vectorstore import RAGPipeline, SearchResult
 
             rag = RAGPipeline(store=vector_store, embed_fn=embed_fn, dimension=384)
-            results = rag.query(query, top_k=top_k)
+            dense_results = rag.query(query, top_k=top_k * 2)
+            lexical_results = (
+                lexical_backend.search(query, top_k=top_k * 2)
+                if lexical_backend is not None and lexical_backend.health_check()
+                else []
+            )
+            if lexical_results:
+                by_id: dict[str, Any] = {}
+                scores: dict[str, float] = {}
+                for ranking in (dense_results, lexical_results):
+                    for rank, result in enumerate(ranking):
+                        doc_id = result.document.id
+                        by_id[doc_id] = result.document
+                        scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (60 + rank + 1)
+                ranked = sorted(scores, key=lambda doc_id: scores[doc_id], reverse=True)[:top_k]
+                results = [
+                    SearchResult(document=by_id[doc_id], score=scores[doc_id]) for doc_id in ranked
+                ]
+                method = "hybrid"
+            else:
+                results = dense_results[:top_k]
+                method = "dense"
             if not results:
                 return [{"info": "Vector store is empty — run a gold pipeline to populate it."}]
             return [
@@ -176,6 +259,7 @@ def _make_search_similar(
                     "id": r.document.id,
                     "text": r.document.text,
                     "score": round(r.score, 4),
+                    "method": method,
                     **r.document.metadata,
                 }
                 for r in results
@@ -205,6 +289,7 @@ def register_builtin_tools(
     models_dir: Path | None = None,
     vector_store: Any = None,
     embed_fn: Any | None = None,
+    lexical_backend: Any = None,
 ) -> None:
     """Register all built-in tools.
 
@@ -267,18 +352,26 @@ def register_builtin_tools(
         )
 
     if vector_store is not None:
-        search_fn = _make_search_similar(vector_store, embed_fn)
-        builtins.append(
-            ToolSpec(
-                name="search_similar",
-                description=(
-                    "Semantic similarity search over the movie catalog. "
-                    "Finds movies similar to a natural-language query. "
-                    "Args: query (str), top_k (int, default 5)."
+        search_fn = _make_search_similar(vector_store, embed_fn, lexical_backend)
+        builtins.extend(
+            [
+                ToolSpec(
+                    name="search_similar",
+                    description=(
+                        "Semantic similarity search over the movie catalog. "
+                        "Finds movies similar to a natural-language query. "
+                        "Args: query (str), top_k (int, default 5)."
+                    ),
+                    fn=search_fn,
+                    parameters={"query": "str", "top_k": "int (optional, default 5)"},
                 ),
-                fn=search_fn,
-                parameters={"query": "str", "top_k": "int (optional, default 5)"},
-            )
+                ToolSpec(
+                    name="rag_search",
+                    description="RAG search over the indexed lakehouse documents.",
+                    fn=search_fn,
+                    parameters={"query": "str", "top_k": "int (optional, default 5)"},
+                ),
+            ]
         )
 
     for spec in builtins:

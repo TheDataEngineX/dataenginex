@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from dataenginex.config.defaults import (
     DEFAULT_AGENT_RUNTIME,
@@ -29,7 +29,17 @@ from dataenginex.config.defaults import (
 # --- Project ---
 
 
-class ProjectConfig(BaseModel):
+class FrozenModel(BaseModel):
+    """Base for all dex.yaml config models — immutable per architecture convention.
+
+    Mutating a loaded config in place (e.g. ``cfg.schedule = x``) is disallowed;
+    construct a new instance instead, e.g. ``cfg.model_copy(update={"schedule": x})``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+
+class ProjectConfig(FrozenModel):
     """Top-level project metadata."""
 
     name: str
@@ -40,7 +50,7 @@ class ProjectConfig(BaseModel):
 # --- Data Layer ---
 
 
-class SourceConfig(BaseModel):
+class SourceConfig(FrozenModel):
     """A named data source."""
 
     type: str  # csv, duckdb, postgres, s3, rest, kafka, etc.
@@ -51,7 +61,7 @@ class SourceConfig(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
-class TransformStepConfig(BaseModel):
+class TransformStepConfig(FrozenModel):
     """A single transform step in a pipeline."""
 
     type: str  # filter, derive, cast, deduplicate, sql, rename, drop_columns, fill_null, aggregate
@@ -70,7 +80,7 @@ class TransformStepConfig(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
-class QualityCheckConfig(BaseModel):
+class QualityCheckConfig(FrozenModel):
     """Quality checks applied after transforms."""
 
     completeness: float | None = None  # min non-null ratio (0.0-1.0)
@@ -80,19 +90,22 @@ class QualityCheckConfig(BaseModel):
     custom_sql: str | None = None
 
 
-class PipelineConfig(BaseModel):
+class PipelineConfig(FrozenModel):
     """A named data pipeline."""
 
     source: str  # reference to a named source
     transforms: list[TransformStepConfig] = Field(default_factory=list)
     quality: QualityCheckConfig | None = None
     destination: str | None = None
-    target: dict[str, str] | None = None  # {layer: "silver"}
+    target: dict[str, str] | None = None  # {layer: "silver", format: "parquet"|"delta"}
     depends_on: list[str] = Field(default_factory=list)
+    publish_to: list[str] = Field(default_factory=list)
+    orm_sink: dict[str, str] | None = None
     schedule: str | None = None  # cron expression
+    on_failure: Literal["fail", "skip", "stale"] = "fail"  # ponytail: fail-fast default
 
 
-class DataConfig(BaseModel):
+class DataConfig(FrozenModel):
     """Data layer configuration."""
 
     engine: str = DEFAULT_ENGINE
@@ -103,21 +116,21 @@ class DataConfig(BaseModel):
 # --- ML Layer ---
 
 
-class TrackerConfig(BaseModel):
+class TrackerConfig(FrozenModel):
     """Experiment tracker backend config."""
 
     backend: str = DEFAULT_TRACKER
     uri: str | None = None  # for mlflow
 
 
-class FeatureStoreConfig(BaseModel):
+class FeatureStoreConfig(FrozenModel):
     """Feature store backend config."""
 
     backend: str = DEFAULT_FEATURE_STORE
     options: dict[str, Any] = Field(default_factory=dict)
 
 
-class DriftConfig(BaseModel):
+class DriftConfig(FrozenModel):
     """Drift detection configuration."""
 
     monitor: list[str] = Field(default_factory=list)
@@ -125,14 +138,14 @@ class DriftConfig(BaseModel):
     threshold: float = DEFAULT_DRIFT_THRESHOLD
 
 
-class ServingConfig(BaseModel):
+class ServingConfig(FrozenModel):
     """Model serving config."""
 
     engine: str = DEFAULT_SERVING_ENGINE
     endpoints: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class ExperimentConfig(BaseModel):
+class ExperimentConfig(FrozenModel):
     """An ML experiment definition."""
 
     model_type: str = "sklearn"
@@ -141,7 +154,7 @@ class ExperimentConfig(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
-class MlConfig(BaseModel):
+class MlConfig(FrozenModel):
     """ML layer configuration."""
 
     tracker: str = DEFAULT_TRACKER
@@ -155,7 +168,7 @@ class MlConfig(BaseModel):
 # --- AI Layer ---
 
 
-class LLMConfig(BaseModel):
+class LLMConfig(FrozenModel):
     """LLM provider configuration."""
 
     provider: str = DEFAULT_LLM_PROVIDER
@@ -164,7 +177,7 @@ class LLMConfig(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
-class RetrievalConfig(BaseModel):
+class RetrievalConfig(FrozenModel):
     """Retrieval strategy configuration."""
 
     strategy: str = DEFAULT_RETRIEVAL_STRATEGY
@@ -173,7 +186,7 @@ class RetrievalConfig(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
-class VectorStoreConfig(BaseModel):
+class VectorStoreConfig(FrozenModel):
     """Vector store backend configuration."""
 
     backend: str = DEFAULT_VECTORSTORE_BACKEND
@@ -181,16 +194,17 @@ class VectorStoreConfig(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
-class CollectionConfig(BaseModel):
+class CollectionConfig(FrozenModel):
     """A named vector collection."""
 
     source: str | None = None  # pipeline that populates it
+    column: str | None = None  # text column on the source table to embed
     embedding_model: str | None = None  # override default
     chunk_size: int = 512
     chunk_overlap: int = 50
 
 
-class AgentConfig(BaseModel):
+class AgentConfig(FrozenModel):
     """An AI agent definition."""
 
     runtime: str = DEFAULT_AGENT_RUNTIME
@@ -198,10 +212,16 @@ class AgentConfig(BaseModel):
     tools: list[str] = Field(default_factory=list)
     model: str | None = None  # override default LLM
     max_iterations: int = 10
+    # Aggregate wall-clock budget across the whole run() loop. Per-call LLM
+    # timeouts (LLMConfig.timeout_seconds) bound a single request, not the
+    # sum of up to max_iterations of them — without this, a caller-side
+    # timeout (e.g. dex-studio's HTTP request deadline) can never actually
+    # fire before the loop finishes on its own.
+    timeout_seconds: float | None = None
     memory: Literal["short_term", "episodic", "long_term"] = "short_term"
 
 
-class AiConfig(BaseModel):
+class AiConfig(FrozenModel):
     """AI layer configuration."""
 
     llm: LLMConfig = Field(default_factory=LLMConfig)
@@ -214,7 +234,7 @@ class AiConfig(BaseModel):
 # --- SecOps ---
 
 
-class PolicyRule(BaseModel):
+class PolicyRule(FrozenModel):
     """A data governance policy rule."""
 
     name: str
@@ -224,7 +244,7 @@ class PolicyRule(BaseModel):
     tables: list[str] = Field(default_factory=list)
 
 
-class AlertRule(BaseModel):
+class AlertRule(FrozenModel):
     """An operational alert definition."""
 
     name: str
@@ -233,14 +253,14 @@ class AlertRule(BaseModel):
     channels: list[str] = Field(default_factory=list)
 
 
-class CostsConfig(BaseModel):
+class CostsConfig(FrozenModel):
     """Cost tracking configuration."""
 
     track: bool = True
     breakdown_by: list[str] = Field(default_factory=lambda: ["pipeline", "model", "agent"])
 
 
-class CompactionConfig(BaseModel):
+class CompactionConfig(FrozenModel):
     """Lakehouse compaction configuration."""
 
     enabled: bool = True
@@ -250,21 +270,21 @@ class CompactionConfig(BaseModel):
     target_file_size_mb: int = 128
 
 
-class AlertingChannelConfig(BaseModel):
+class AlertingChannelConfig(FrozenModel):
     """A single alerting output channel."""
 
     type: str
     level: str = "WARNING"
 
 
-class AlertingConfig(BaseModel):
+class AlertingConfig(FrozenModel):
     """Alerting channels configuration."""
 
     enabled: bool = True
     channels: dict[str, AlertingChannelConfig] = Field(default_factory=dict)
 
 
-class PiiConfig(BaseModel):
+class PiiConfig(FrozenModel):
     """PII detection configuration."""
 
     scan: bool = False
@@ -273,14 +293,14 @@ class PiiConfig(BaseModel):
     masking: dict[str, Any] | None = None  # per-field masking strategy overrides
 
 
-class AuditConfig(BaseModel):
+class AuditConfig(FrozenModel):
     """Audit logging configuration.
 
     Attributes:
         enabled: Master switch. When ``True`` a :class:`~dataenginex.secops.AuditLogger`
             is created and attached to the :class:`~dataenginex.secops.PrivacyGuard`
             so every PII detection/masking event is persisted.
-        db_path: DuckDB database path for the audit log.  Leave empty (default)
+        db_path: SQLite database path for the audit log.  Leave empty (default)
             for in-memory-only logging (data lost on restart). Set to a relative
             path (e.g. ``"secops_audit.db"``) and it is resolved under the
             project's ``.dex/`` directory; use an absolute path for a custom
@@ -291,7 +311,7 @@ class AuditConfig(BaseModel):
     db_path: str = ""  # empty → :memory: (no persistence)
 
 
-class GuardConfig(BaseModel):
+class GuardConfig(FrozenModel):
     """Outbound LLM call guard (``PrivacyGuard``) configuration.
 
     Wraps every external LLM provider call with PII detection and either
@@ -320,7 +340,7 @@ class GuardConfig(BaseModel):
     local_targets: list[str] = Field(default_factory=lambda: ["ollama", "local"])
 
 
-class SecopsConfig(BaseModel):
+class SecopsConfig(FrozenModel):
     """Security operations configuration."""
 
     pii: PiiConfig = Field(default_factory=PiiConfig)
@@ -333,7 +353,7 @@ class SecopsConfig(BaseModel):
 # --- Observability ---
 
 
-class ObservabilityConfig(BaseModel):
+class ObservabilityConfig(FrozenModel):
     """Observability configuration."""
 
     metrics: bool = True
@@ -347,7 +367,7 @@ class ObservabilityConfig(BaseModel):
 # --- Root Config ---
 
 
-class DexConfig(BaseModel):
+class DexConfig(FrozenModel):
     """Root configuration model — one ``dex.yaml`` defines everything.
 
     Only ``project`` is required. All other sections have sensible defaults.

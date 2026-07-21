@@ -54,6 +54,7 @@ class PipelineRunRecord:
     steps_completed: int = 0
     duration_ms: float = 0.0
     error: str | None = None
+    skipped: bool = False
 
 
 @dataclass
@@ -149,7 +150,8 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
     rows_output     INTEGER NOT NULL DEFAULT 0,
     steps_completed INTEGER NOT NULL DEFAULT 0,
     duration_ms     REAL    NOT NULL DEFAULT 0,
-    error           TEXT
+    error           TEXT,
+    skipped         INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS lineage_events (
@@ -319,6 +321,7 @@ class DexStore:
         steps_completed: int = 0,
         duration_ms: float = 0.0,
         error: str | None = None,
+        skipped: bool = False,
     ) -> PipelineRunRecord:
         rec = PipelineRunRecord(
             pipeline_name=pipeline_name,
@@ -328,12 +331,13 @@ class DexStore:
             steps_completed=steps_completed,
             duration_ms=round(duration_ms, 2),
             error=error,
+            skipped=skipped,
         )
         self._write(
             """INSERT INTO pipeline_runs
                (run_id, pipeline_name, timestamp, success,
-                rows_input, rows_output, steps_completed, duration_ms, error)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                rows_input, rows_output, steps_completed, duration_ms, error, skipped)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             [
                 rec.run_id,
                 rec.pipeline_name,
@@ -344,6 +348,7 @@ class DexStore:
                 rec.steps_completed,
                 rec.duration_ms,
                 rec.error,
+                1 if rec.skipped else 0,
             ],
         )
         logger.info("pipeline run recorded", pipeline=pipeline_name, success=success)
@@ -378,6 +383,7 @@ class DexStore:
             steps_completed=row[6],
             duration_ms=row[7],
             error=row[8],
+            skipped=bool(row[9]) if len(row) > 9 else False,
         )
 
     # =========================================================================

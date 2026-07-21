@@ -47,7 +47,7 @@ result = engine.model_registry.predict("churn_model", features)
 # AI — chat with an agent over your data
 response = engine.agents["assistant"].chat("summarise the latest pipeline run")
 
-# Persistence — query DuckDB-backed history
+# Persistence — query SQLite-backed history
 runs = engine.store.list_pipeline_runs(limit=10)
 ```
 
@@ -70,7 +70,7 @@ from dataenginex.ai.vectorstore import VectorStoreBackend
 | Module | Description |
 | --- | --- |
 | `dataenginex.engine` | `DexEngine` — single entry point; loads config, inits store, wires backends |
-| `dataenginex.store` | `DexStore` — DuckDB-backed persistence (`.dex/store.duckdb`) |
+| `dataenginex.store` | `DexStore` — SQLite (WAL) persistence (`.dex/store.duckdb`) |
 | `dataenginex.config` | `dex.yaml` schema, loader, env-var resolution |
 | `dataenginex.core` | Exceptions, `Base*` ABCs, `BackendRegistry` |
 | `dataenginex.cli` | `dex` CLI (`validate`, `version`, `init`) |
@@ -87,20 +87,11 @@ from dataenginex.ai.vectorstore import VectorStoreBackend
 
 ## Want the UI?
 
-`dataenginex` is the engine. The web UI lives in a separate repo:
-
-```bash
-git clone https://github.com/TheDataEngineX/dex-studio && cd dex-studio
-docker compose up         # open http://localhost:7860
-```
-
-DEX Studio imports `dataenginex` directly — no separate API server.
+`dataenginex` is the engine. The web UI lives in a separate repo: [github.com/TheDataEngineX/dex-studio](https://github.com/TheDataEngineX/dex-studio). It imports `dataenginex` directly — no separate API server.
 
 ## Links
 
 - Source: [github.com/TheDataEngineX/dataenginex](https://github.com/TheDataEngineX/dataenginex)
 - Docs: [docs.thedataenginex.org](https://docs.thedataenginex.org)
-- Roadmap: [docs/docs/roadmap/DESIGN-2026.md](https://github.com/TheDataEngineX/docs/blob/main/docs/roadmap/DESIGN-2026.md)
-- ADRs: [docs/adr/](https://github.com/TheDataEngineX/docs/tree/main/adr)
 - Issues: [github.com/TheDataEngineX/dataenginex/issues](https://github.com/TheDataEngineX/dataenginex/issues)
 - License: MIT

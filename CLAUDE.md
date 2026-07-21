@@ -13,7 +13,7 @@ Goal is to save Claude code tokens for lower cost without losing quality.
 |---------|----------|---------|
 | `dataenginex` | `src/dataenginex/` | Core library — config, registry, CLI, pipelines, ML, AI, PrivacyGuard |
 
-**Stack:** Python 3.13+ · DuckDB · structlog · Pydantic · Click · pyarrow · croniter · httpx · prometheus-client · uv · Ruff · mypy strict · pytest
+**Stack:** Python 3.13+ · DuckDB · SQLite (WAL, persistence store) · structlog · Pydantic · Click · pyarrow · croniter · httpx · prometheus-client · uv · Ruff · mypy strict · pytest
 
 **Version:** `uv run poe version`
 
@@ -41,9 +41,7 @@ dex validate dex.yaml     # Validate config file
 dex version               # Show version + environment
 
 # Dev
-uv run poe dev            # Dev server (uvicorn reload, port 17000) — for examples/API testing only (dataenginex has no built-in HTTP server; see dex-studio for web UI)
-uv run poe docker-up      # Docker compose up
-uv run poe docker-down    # Docker compose down
+uv run poe dev            # Dev server (uvicorn reload, port 17000) — for examples/API testing only (dataenginex has no built-in HTTP server)
 
 # Deps
 uv run poe uv-sync        # Sync deps from lockfile
@@ -58,7 +56,11 @@ pip install "dataenginex[cloud]"        # S3, GCS, BigQuery connectors
 pip install "dataenginex[postgres]"     # asyncpg for Postgres lineage
 pip install "dataenginex[qdrant]"       # Qdrant vector store
 pip install "dataenginex[queue]"        # arq background jobs
+pip install "dataenginex[delta]"        # Delta Lake connector
+pip install "dataenginex[pytorch]"      # PyTorch ML
 pip install 'litellm>=1.83.3' --no-deps # LLM routing (separate: pins python-dotenv)
+
+# Kafka, RabbitMQ, Elasticsearch, GraphQL, SQLAlchemy are in the base install (no extra needed).
 ```
 
 ______________________________________________________________________
@@ -67,3 +69,7 @@ ______________________________________________________________________
 
 After any code change run: `uv run poe check-all` (lint + typecheck + test).
 Tests passing ≠ app working — run `dex validate dex.yaml` to verify config.
+
+## TMDB Data-Intelligence Re-Architecture (2026-07-06)
+
+**Core vs custom boundary:** moviedex-specific logic (TMDB connector, Kafka topics, RabbitMQ handlers, ES mappings, GraphQL resolvers) stays in the moviedex project's own `plugins/` dir — never added to dataenginex. Only genuinely reusable capability (new connector types, transform types, generic backends/ABCs) goes in core.

@@ -12,6 +12,7 @@ from dataenginex.data.connectors.dbt import DbtConnector  # noqa: E402, F401
 from dataenginex.data.connectors.delta import DeltaConnector  # noqa: E402, F401
 from dataenginex.data.connectors.duckdb import DuckDBConnector  # noqa: E402, F401
 from dataenginex.data.connectors.http import HttpConnector  # noqa: E402, F401
+from dataenginex.data.connectors.kafka import KafkaConnector  # noqa: E402, F401
 from dataenginex.data.connectors.parquet import ParquetConnector  # noqa: E402, F401
 from dataenginex.data.connectors.rest import RestApiConnector  # noqa: E402, F401
 from dataenginex.data.connectors.spark import SparkConnector  # noqa: E402, F401
@@ -25,6 +26,7 @@ __all__ = [
     "DeltaConnector",
     "DuckDBConnector",
     "HttpConnector",
+    "KafkaConnector",
     "ParquetConnector",
     "RestApiConnector",
     "SparkConnector",

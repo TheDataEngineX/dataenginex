@@ -53,7 +53,8 @@ Register, version, stage-transition (Staging → Production → Archived), and r
 ```python
 from dataenginex.ml.registry import ModelRegistry, ModelStage
 
-registry = ModelRegistry(db_path=".dex/store.duckdb")
+registry = ModelRegistry(persist_path=".dex/models.db")
+# or: ModelRegistry(store=engine.store) to share the engine's DexStore
 registry.register(result.model, name="churn_v1", metrics=result.metrics)
 registry.transition("churn_v1", version=1, stage=ModelStage.PRODUCTION)
 model = registry.load("churn_v1", stage=ModelStage.PRODUCTION)
@@ -156,7 +157,7 @@ Built-in DuckDB-backed feature store. Stores feature groups as DuckDB tables. Us
 ```python
 from dataenginex.ml.features.builtin import BuiltinFeatureStore
 
-store = BuiltinFeatureStore(db_path=".dex/features.duckdb")
+store = BuiltinFeatureStore(database=".dex/features.duckdb")
 store.write_features("user_features", df, entity_col="user_id")
 features = store.get_features("user_features", entity_ids=["u1", "u2"])
 ```

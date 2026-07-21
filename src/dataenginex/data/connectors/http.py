@@ -7,16 +7,19 @@ returns a delimited text file.
 On every ``connect()`` call the connector checks the cache age:
 - If the cached parquet is younger than ``max_age_hours`` (default 20h), it
   is reused — no network request.
-- Otherwise the file is re-downloaded, decompressed on-the-fly, and
-  converted to Snappy Parquet via DuckDB.
+- Otherwise the file is re-downloaded and converted to Snappy Parquet via
+  DuckDB, which reads gzip-compressed CSV/TSV natively — the compressed
+  download is never fully decompressed to a second on-disk copy, keeping
+  peak resource use well under the multi-GB decompressed size of the
+  largest IMDB datasets.
 
-``read()`` returns a ``pyarrow.Table`` so the PipelineRunner can register it
-directly in DuckDB without a costly Python-object round-trip.
+``read()`` returns a memory-mapped ``pyarrow.Table`` so the PipelineRunner
+can register it directly in DuckDB without a costly Python-object
+round-trip, and without copying the whole dataset into the process heap.
 """
 
 from __future__ import annotations
 
-import gzip
 import shutil
 import tempfile
 import time
@@ -25,10 +28,15 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
-import pyarrow.parquet as pq
+import pyarrow.dataset as ds
 import structlog
 
 from dataenginex.core.interfaces import BaseConnector
+from dataenginex.core.resources import (
+    duckdb_memory_limit,
+    note_duckdb_connection_closed,
+    note_duckdb_connection_opened,
+)
 from dataenginex.data.connectors import connector_registry
 
 logger = structlog.get_logger()
@@ -88,7 +96,15 @@ class HttpConnector(BaseConnector):
     # ── Download + convert ────────────────────────────────────────────────────
 
     def _download_and_convert(self, dest: Path) -> None:
-        """Stream-download the URL, decompress if gzipped, convert to Parquet."""
+        """Stream-download the URL and convert straight to Parquet via DuckDB.
+
+        DuckDB's ``read_csv`` decompresses gzip internally while streaming,
+        so the compressed download is never fully expanded to a second
+        on-disk plain-TSV copy first — for the largest IMDB datasets
+        (tens of millions of rows) that intermediate copy alone used to run
+        into multiple GB, which is the real ceiling on resource-constrained
+        self-hosted deployments.
+        """
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         is_gz = self._url.endswith(".gz")
 
@@ -96,37 +112,33 @@ class HttpConnector(BaseConnector):
         t0 = time.monotonic()
 
         with tempfile.TemporaryDirectory() as tmp:
-            raw_path = Path(tmp) / "download.raw"
+            raw_path = Path(tmp) / ("download.gz" if is_gz else "download.raw")
 
             with urllib.request.urlopen(self._url, timeout=300) as resp, open(raw_path, "wb") as f:
                 shutil.copyfileobj(resp, f)
 
-            # Decompress gzip to a plain TSV so DuckDB can read it without
-            # needing to decompress multiple times during conversion.
-            if is_gz:
-                tsv_path = Path(tmp) / "data.tsv"
-                with gzip.open(raw_path, "rb") as f_in, tsv_path.open("wb") as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-            else:
-                tsv_path = raw_path
-
             tmp_dest = dest.with_suffix(".tmp.parquet")
             sep_escaped = self._sep.replace("'", "''")
             null_escaped = self._null_str.replace("'", "''")
-            tsv_str = str(tsv_path).replace("'", "''")
+            raw_str = str(raw_path).replace("'", "''")
             out_str = str(tmp_dest).replace("'", "''")
 
-            con = duckdb.connect(":memory:")
+            # This connection may be nested inside a pipeline run that already
+            # holds its own DuckDB connection open (PipelineRunner.run) —
+            # note it so duckdb_memory_limit() sizes both down accordingly.
+            note_duckdb_connection_opened()
+            con = duckdb.connect(":memory:", config={"memory_limit": duckdb_memory_limit()})
             try:
                 varchar_clause = ", all_varchar=true" if self._all_varchar else ""
+                compression_clause = ", compression='gzip'" if is_gz else ""
                 con.execute(f"""
                     COPY (
                         SELECT * FROM read_csv(
-                            '{tsv_str}',
+                            '{raw_str}',
                             sep='{sep_escaped}',
                             header=true,
                             nullstr='{null_escaped}',
-                            ignore_errors=true{varchar_clause}
+                            ignore_errors=true{varchar_clause}{compression_clause}
                         )
                     )
                     TO '{out_str}' (FORMAT PARQUET, COMPRESSION SNAPPY)
@@ -135,6 +147,7 @@ class HttpConnector(BaseConnector):
                 rows = int(row[0]) if row else 0
             finally:
                 con.close()
+                note_duckdb_connection_closed()
 
             tmp_dest.rename(dest)
 
@@ -168,17 +181,26 @@ class HttpConnector(BaseConnector):
         table: str | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Return the cached data as a ``pyarrow.Table``.
+        """Return the cached data as a lazy ``pyarrow.dataset.Dataset``.
 
-        The PipelineRunner registers this directly in DuckDB —
-        no Python-level row iteration needed.
+        The PipelineRunner registers this directly in DuckDB, which scans
+        it natively — no Python-level row iteration needed. Unlike
+        ``pq.read_table()`` (even with ``memory_map=True``), a Dataset
+        never builds Arrow array/chunk objects for the whole file in the
+        Python heap; DuckDB's own memory_limit-respecting engine handles
+        materialization instead. That matters for the largest IMDB sources
+        (100M+ rows) on resource-constrained self-hosted deployments, where
+        the eager-Table approach used enough process heap to crash the
+        container outright.
         """
         if self._cached_parquet is None or not self._cached_parquet.exists():
             msg = "HttpConnector not connected — call connect() first"
             raise RuntimeError(msg)
-        tbl = pq.read_table(str(self._cached_parquet))  # type: ignore[no-untyped-call]
-        logger.info("http connector read", rows=len(tbl), path=str(self._cached_parquet))
-        return tbl
+        dataset = ds.dataset(str(self._cached_parquet), format="parquet")  # type: ignore[no-untyped-call]
+        logger.info(
+            "http connector read", rows=dataset.count_rows(), path=str(self._cached_parquet)
+        )
+        return dataset
 
     def write(self, data: Any, *, table: str = "", **kwargs: Any) -> None:
         raise NotImplementedError("HttpConnector is read-only")

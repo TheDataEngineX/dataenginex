@@ -18,7 +18,7 @@ pip install dataenginex                  # lean base — DuckDB, structlog, Pyda
 ```python
 from dataenginex.engine import DexEngine
 
-engine = DexEngine("dex.yaml")           # loads config, inits DuckDB store, wires backends
+engine = DexEngine("dex.yaml")           # loads config, inits SQLite store, wires backends
 engine.run_pipeline("clean_users")       # execute a pipeline
 models = engine.model_registry.list_models()
 response = engine.agents["assistant"].chat("summarise the latest run")
@@ -32,12 +32,13 @@ Optional integrations install only what you need:
 | `[qdrant]` | `qdrant-client` | Production vector store (falls back to in-memory) |
 | `[queue]` | `arq` (+ redis transitively) | Async background jobs |
 | `[cloud]` | `boto3`, `google-cloud-storage`, `google-cloud-bigquery` | S3 / GCS / BigQuery sources & sinks |
-| `[ml]` | `scikit-learn`, `xgboost`, `sentence-transformers` | Train classical ML models, generate embeddings |
+| `[ml]` | `scikit-learn`, `sentence-transformers` | Train classical ML models, generate embeddings |
 | `[tracking]` | `mlflow` | Experiment tracking via MLflow |
-| `[data]` | `pyspark`, `databricks-cli` | PySpark connector + dbt CLI connector (run dbt models as pipeline steps) |
+| `[data]` | `pyspark` | PySpark connector + dbt CLI connector (run dbt models as pipeline steps) |
+| `[delta]` | `deltalake` | Delta Lake connector |
+| `[pytorch]` | `torch` | PyTorch ML models |
 
 > **LiteLLM** must be installed separately due to a `python-dotenv` pin conflict:
->
 > ```bash
 > pip install 'litellm>=1.83.3' --no-deps
 > ```
@@ -52,17 +53,17 @@ ______________________________________________________________________
 | --- | --- | --- |
 | Data engine | DuckDB | PySpark (`[data]`) |
 | Storage | Local parquet + DuckDB | S3, GCS, BigQuery (`[cloud]`) |
-| Lineage | DuckDB / JSON | Postgres (`[postgres]`) |
+| Lineage | JSON / SQLite | Postgres (`[postgres]`) |
 | Scheduler | croniter | — |
-| ML training | scikit-learn wrapper (`[ml]`) | XGBoost (`[ml]`) |
+| ML training | scikit-learn wrapper (`[ml]`) | — |
 | ML tracking | JSON-based | MLflow (`[tracking]`) |
 | LLM providers | Ollama, OpenAI, Anthropic | Any OpenAI-compatible URL |
-| Vector store | DuckDB VSS + in-memory | Qdrant (`[qdrant]`) |
-| Retrieval | BM25 + dense + hybrid | — |
-| Persistence | DuckDB (`.dex/store.duckdb`) | — |
+| Vector store | in-memory | Qdrant (`[qdrant]`) |
+| Retrieval | BM25 + dense + hybrid + graph | — |
+| Persistence | SQLite, WAL mode (`.dex/store.duckdb`) | — |
 | Logging | structlog | — |
 | Privacy | PrivacyGuard — PII detection, masking strategies, outbound call audit | — |
-| Connectors | CSV, Parquet, DuckDB, REST, Kafka | PySpark (`[data]`), dbt CLI (`[data]`) |
+| Connectors | CSV, Parquet, DuckDB, REST, HTTP, Kafka | PySpark (`[data]`), dbt CLI (`[data]`), Delta (`[delta]`), PostgreSQL (`[postgres]`) |
 
 **Local-first by default.** A fresh `pip install dataenginex` requires no external services — DuckDB is embedded; nothing reaches the network unless you explicitly configure it (or call a hosted LLM).
 
@@ -76,7 +77,7 @@ src/dataenginex/
 ├── config/             # dex.yaml schema, loader
 ├── core/               # Base ABCs, registry, exceptions
 ├── engine.py           # DexEngine — entry point
-├── store.py            # DexStore — DuckDB persistence
+├── store.py            # DexStore — SQLite (WAL) persistence
 ├── api/                # Pydantic response models (no HTTP server)
 ├── data/               # Connectors, pipeline runner, transforms, quality
 ├── ml/                 # Classical ML: training, registry, serving, drift
@@ -109,14 +110,7 @@ ______________________________________________________________________
 
 ## Want the full workbench?
 
-`dataenginex` is the library. The web UI is in a separate repo:
-
-```bash
-git clone https://github.com/TheDataEngineX/dex-studio && cd dex-studio
-docker compose up             # http://localhost:7860
-```
-
-DataEngineX Studio imports `dataenginex` directly — no separate API server, no HTTP hop.
+`dataenginex` is the library. The web UI is [dex-studio](https://github.com/TheDataEngineX/dex-studio) — it imports `dataenginex` directly, no HTTP hop.
 
 ______________________________________________________________________
 
@@ -126,7 +120,7 @@ ______________________________________________________________________
 | --- | --- |
 | [dataenginex](https://github.com/TheDataEngineX/dataenginex) | This library (PyPI) |
 | [dex-studio](https://github.com/TheDataEngineX/dex-studio) | Web UI — FastAPI + Jinja2 + HTMX |
-| [docs](https://github.com/TheDataEngineX/docs) | Docs site ([docs.thedataenginex.org](https://docs.thedataenginex.org)) — ADRs + roadmap live here |
+| [infradex](https://github.com/TheDataEngineX/infradex) | Kubernetes deployment via ArgoCD |
 
 ______________________________________________________________________
 
@@ -139,9 +133,7 @@ ______________________________________________________________________
 | [Development](docs/development.md) | Local setup and workflow |
 | [API Reference](docs/api-reference/index.md) | Module-by-module reference |
 | [CHANGELOG](CHANGELOG.md) | Release history |
-| [Roadmap](https://github.com/TheDataEngineX/docs/blob/main/docs/roadmap/DESIGN-2026.md) | 10-week plan to v0.5 |
-| [ADRs](https://github.com/TheDataEngineX/docs/tree/main/adr) | Architecture decisions |
 
 ______________________________________________________________________
 
-**License:** MIT • **Python:** 3.13+ • **Status:** Pre-1.0 (rebuilding scope through v0.5)
+**License:** MIT • **Python:** 3.13+ • **Status:** Pre-1.0

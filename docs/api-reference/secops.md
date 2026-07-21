@@ -1,15 +1,16 @@
 # dataenginex.secops
 
-Security operations — PII detection, data masking, audit logging, access gates, and privacy guards.
+Security operations — PII detection, data masking, audit logging, and a combined scan+mask+audit gate.
 
 ## Quick import
 
 ```python
 from dataenginex.secops import (
-    PiiDetector,
-    DataMasker,
+    PIIDetector,
+    MaskingEngine,
+    MaskingStrategy,
     AuditLogger,
-    AccessGate,
+    SecOpsGate,
     PrivacyGuard,
 )
 ```
@@ -20,19 +21,19 @@ ______________________________________________________________________
 
 `dataenginex.secops.pii`
 
-Detects PII in DataFrames and text using rule-based patterns (email, phone, SSN, credit card, IP address) and optional NER model integration.
+Detects PII in records using field-name hints and value-pattern regexes (email, phone, SSN, credit card, IP address, date-of-birth).
 
 ::: dataenginex.secops.pii
 
-**Key class:** `PiiDetector`
+**Key class:** `PIIDetector`
 
 ```python
-from dataenginex.secops.pii import PiiDetector
+from dataenginex.secops.pii import PIIDetector
 
-detector = PiiDetector()
-report = detector.scan(df)
-for finding in report.findings:
-    print(finding.column, finding.pii_type, finding.sample_count)
+detector = PIIDetector(confidence_threshold=0.5)
+detected = detector.scan_dataset(records)  # dict[field_name, PIIField]
+for field_name, finding in detected.items():
+    print(field_name, finding.pii_type, finding.confidence)
 ```
 
 ______________________________________________________________________
@@ -41,19 +42,20 @@ ______________________________________________________________________
 
 `dataenginex.secops.masking`
 
-Masks or redacts PII and sensitive columns in DataFrames. Supports hash, truncation, fake-data substitution, and full redaction strategies.
+Masks PII fields in records. Supports redact, hash, partial (keep last N chars), and tokenize strategies.
 
 ::: dataenginex.secops.masking
 
-**Key class:** `DataMasker`
+**Key class:** `MaskingEngine`
 
 ```python
-from dataenginex.secops.masking import DataMasker, MaskStrategy
+from dataenginex.secops.masking import MaskingEngine, MaskingStrategy
 
-masker = DataMasker(
-    rules={"email": MaskStrategy.HASH, "phone": MaskStrategy.REDACT}
+masker = MaskingEngine(
+    default_strategy=MaskingStrategy.REDACT,
+    field_strategies={"email": MaskingStrategy.HASH, "phone": MaskingStrategy.PARTIAL},
 )
-masked_df = masker.mask(df)
+masked_records = masker.mask_dataset(records, pii_fields={"email", "phone"})
 ```
 
 ______________________________________________________________________
@@ -62,7 +64,7 @@ ______________________________________________________________________
 
 `dataenginex.secops.audit`
 
-Immutable audit log for data access, pipeline runs, model predictions, and config changes. Persisted to DuckDB.
+Structured audit log for PII scan/mask operations. Persisted to SQLite (WAL mode) — in-memory by default, file-backed when a `db_path` is given.
 
 ::: dataenginex.secops.audit
 
@@ -71,34 +73,36 @@ Immutable audit log for data access, pipeline runs, model predictions, and confi
 ```python
 from dataenginex.secops.audit import AuditLogger
 
-logger = AuditLogger(db_path=".dex/store.duckdb")
-logger.log(
-    action="pipeline_run",
-    resource="ingest_events",
-    user="svc-account",
-    outcome="success",
+audit = AuditLogger(db_path=".dex/audit.db")
+audit.log_scan(
+    dataset_name="ingest_events",
+    pii_fields=["email"],
+    record_count=1250,
+    actor="svc-account",
 )
-entries = logger.query(action="pipeline_run", since="2024-01-01")
+recent = audit.events_for("ingest_events")
 ```
 
 ______________________________________________________________________
 
-## Access Gate
+## SecOps Gate
 
 `dataenginex.secops.gate`
 
-Policy-based access control gate. Checks whether a caller is permitted to read, write, or run a named resource.
+Scans a batch of records for PII, masks the detected fields, and emits an audit event for both steps — in one call. Combines `PIIDetector`, `MaskingEngine`, and `AuditLogger`.
 
 ::: dataenginex.secops.gate
 
-**Key class:** `AccessGate`
+**Key class:** `SecOpsGate`
 
 ```python
-from dataenginex.secops.gate import AccessGate
+from dataenginex.secops import SecOpsGate, MaskingStrategy
 
-gate = AccessGate.from_config(engine.config)
-gate.check(user="analyst@example.com", action="read", resource="gold.user_summary")
-# raises PermissionError if denied
+gate = SecOpsGate(
+    field_strategies={"email": MaskingStrategy.HASH},
+    dataset_name="users",
+)
+clean_records = gate.process(raw_records)
 ```
 
 ______________________________________________________________________
@@ -107,7 +111,7 @@ ______________________________________________________________________
 
 `dataenginex.secops.guard`
 
-End-to-end privacy layer: wraps pipeline runs with automatic PII scanning, masking, and audit logging before data leaves a layer boundary.
+Pre-send PII interception for outbound LLM calls: scans a prompt, then masks or blocks it before it leaves the process. Compose with a provider via `dataenginex.ai.routing.guarded.GuardedProvider`, or call `process()` directly.
 
 ::: dataenginex.secops.guard
 
@@ -116,6 +120,8 @@ End-to-end privacy layer: wraps pipeline runs with automatic PII scanning, maski
 ```python
 from dataenginex.secops.guard import PrivacyGuard
 
-guard = PrivacyGuard(detector=PiiDetector(), masker=DataMasker(), audit=AuditLogger())
-safe_df = guard.enforce(df, destination_layer="gold")
+guard = PrivacyGuard()
+result = guard.process("Contact me at jane@example.com", target="openai")
+print(result.safe_prompt)   # PII masked unless target is a local provider
+print(result.detections)    # tuple of TextMatch hits
 ```
