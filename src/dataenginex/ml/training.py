@@ -647,7 +647,7 @@ class SentenceTransformerFinetuneTrainer(BaseTrainer):
         self._is_fitted = False
 
     def _build_loss(self, model: Any) -> Any:
-        from sentence_transformers import losses
+        from sentence_transformers.sentence_transformer import losses
 
         if self.loss_type == "cosine":
             return losses.CosineSimilarityLoss(model)
@@ -678,11 +678,12 @@ class SentenceTransformerFinetuneTrainer(BaseTrainer):
         warmup_steps = int(params.get("warmup_steps", self.warmup_steps))
 
         self._model = SentenceTransformer(self.base_model)
-        examples = [
+        examples: list[InputExample] = [
             InputExample(texts=[a, b], label=float(label))
             for (a, b), label in zip(X_train, y_train, strict=True)
         ]
-        loader = DataLoader(examples, shuffle=True, batch_size=batch_size)
+
+        loader: DataLoader[InputExample] = DataLoader(examples, shuffle=True, batch_size=batch_size)  # type: ignore[arg-type]
         loss_fn = self._build_loss(self._model)
 
         start = time.perf_counter()

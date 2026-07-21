@@ -913,9 +913,14 @@ class DexEngine:
             from dataenginex.ml.tracking import tracker_registry
 
             cls: Any = _cast(Any, tracker_registry.get(self.config.ml.tracking.backend))
+            logger.info("ml tracker initialised", backend=self.config.ml.tracking.backend)
             return cls(storage_dir=str(self._dex_dir / "tracking"))
-        except Exception:
-            logger.warning("tracker init failed")
+        except Exception as exc:
+            logger.warning(
+                "ml tracker init failed",
+                backend=self.config.ml.tracking.backend,
+                error=str(exc),
+            )
             return None
 
     def _init_ml_feature_store(self) -> Any:
@@ -924,9 +929,14 @@ class DexEngine:
             from dataenginex.ml.features import feature_store_registry
 
             cls = feature_store_registry.get(self.config.ml.features.backend)
+            logger.info("ml feature store initialised", backend=self.config.ml.features.backend)
             return cls(**self.config.ml.features.options)
-        except Exception:
-            logger.warning("feature store init failed")
+        except Exception as exc:
+            logger.warning(
+                "ml feature store init failed",
+                backend=self.config.ml.features.backend,
+                error=str(exc),
+            )
             return None
 
     def _init_ml_serving(self) -> Any:
@@ -941,9 +951,14 @@ class DexEngine:
 
             model_registry = ModelRegistry(store=self.store)
             cls: Any = cast(Any, serving_registry.get(self.config.ml.serving.engine))
+            logger.info("ml serving engine initialised", engine=self.config.ml.serving.engine)
             return cls(model_registry=model_registry, model_dir=str(self._dex_dir / "models"))
-        except Exception:
-            logger.warning("serving engine init failed")
+        except Exception as exc:
+            logger.warning(
+                "ml serving engine init failed",
+                engine=self.config.ml.serving.engine,
+                error=str(exc),
+            )
             return None
 
     def _init_vector_store(self) -> tuple[Any, Any]:
@@ -964,13 +979,17 @@ class DexEngine:
                 embed_fn = SentenceTransformerEmbedder()
                 logger.info("sentence transformer embedder ready")
             logger.info("vector store initialised", backend="in-memory")
-        except Exception:
-            logger.warning("vector store init failed")
+        except Exception as exc:
+            logger.warning("vector store init failed", error=str(exc))
         return vector_store, embed_fn
 
     def _init_lexical_backends(self) -> dict[str, Any]:
         lexical = self.config.ai.retrieval.options.get("lexical", {})
         if not isinstance(lexical, dict) or lexical.get("backend") != "elasticsearch":
+            logger.debug(
+                "lexical search disabled — elasticsearch not configured "
+                "in dex.yaml (ai.retrieval.options.lexical.backend)"
+            )
             return {}
         try:
             from dataenginex.ai.lexical_search import ElasticsearchBackend
@@ -982,7 +1001,7 @@ class DexEngine:
                 if isinstance(indices, dict) and indices
                 else {"movies": {"index_name": "dex_documents"}}
             )
-            return {
+            backends = {
                 name: ElasticsearchBackend(
                     hosts=list(hosts),
                     index_name=str(
@@ -996,10 +1015,13 @@ class DexEngine:
                 )
                 for name, cfg in configured.items()
             }
+            logger.info("lexical backends initialised", indices=list(backends.keys()), hosts=hosts)
+            return backends
         except Exception as exc:
             logger.warning(
                 "lexical backend init failed; using vector-only retrieval",
                 error=str(exc),
+                hosts=lexical.get("hosts"),
             )
             return {}
 
@@ -1140,9 +1162,14 @@ class DexEngine:
             from dataenginex.ai.llm import get_llm_provider
 
             self.llm = get_llm_provider(self.config.ai.llm.provider, model=self.config.ai.llm.model)
-        except Exception:
+            prov = self.config.ai.llm.provider
+            model = self.config.ai.llm.model
+            logger.info("llm provider initialised", provider=prov, model=model)
+        except Exception as exc:
             self.llm = None
-            logger.warning("LLM provider unavailable")
+            prov = self.config.ai.llm.provider
+            model = self.config.ai.llm.model
+            logger.warning("llm provider unavailable", provider=prov, model=model, error=str(exc))
 
         # Register tools regardless of LLM availability — predict/search_similar are LLM-free.
         try:
@@ -1156,8 +1183,9 @@ class DexEngine:
                 embed_fn=self._embed_fn,
                 lexical_backend=self._lexical_backend,
             )
-        except Exception:
-            logger.warning("tool registration failed")
+            logger.info("builtin tools registered")
+        except Exception as exc:
+            logger.warning("tool registration failed", error=str(exc))
 
         if self.llm is None:
             return
@@ -1185,9 +1213,9 @@ class DexEngine:
                     timeout_seconds=agent_cfg.timeout_seconds,
                     name=name,
                 )
-                logger.info("agent initialized", agent=name)
-        except Exception:
-            logger.warning("agent initialization failed")
+                logger.info("agent initialized", agent=name, runtime=agent_cfg.runtime)
+        except Exception as exc:
+            logger.warning("agent initialization failed", error=str(exc))
 
     def _init_ai_layer(self) -> None:
         try:
@@ -1201,8 +1229,8 @@ class DexEngine:
             self.sandbox = Sandbox()
             self._init_model_router()
             logger.info("AI layer initialized", memory_max_entries=max_entries)
-        except Exception:
-            logger.warning("AI layer init failed")
+        except Exception as exc:
+            logger.warning("AI layer init failed", error=str(exc))
 
     def _init_privacy_guard(self) -> None:
         """Build a ``PrivacyGuard`` from ``dex.yaml secops.guard``.
@@ -1241,11 +1269,16 @@ class DexEngine:
                 "secops_audit.initialized",
                 db_path=db_path,
             )
+        else:
+            logger.info("secops_audit disabled — audit logging not configured")
 
         self.privacy_guard = PrivacyGuard(
             config=guard_cfg,
             audit_logger=audit_logger,
         )
+        en = guard_cfg.enabled
+        strat = len(guard_cfg.strategies)
+        logger.info("privacy guard initialised", enabled=en, strategies=strat)
 
     def _init_model_router(self) -> None:
         import os
@@ -1262,17 +1295,23 @@ class DexEngine:
             from dataenginex.ai.routing.anthropic import AnthropicProvider
 
             providers["anthropic"] = _wrap("anthropic", AnthropicProvider())
+            logger.info("llm provider registered", provider="anthropic")
         if os.environ.get("OPENAI_API_KEY"):
             from dataenginex.ai.routing.openai import OpenAIProvider
 
             providers["openai"] = _wrap("openai", OpenAIProvider())
+            logger.info("llm provider registered", provider="openai")
 
         from dataenginex.ai.routing.ollama import OllamaProvider
 
         providers.setdefault("ollama", _wrap("ollama", OllamaProvider()))
+        logger.info("llm provider registered", provider="ollama")
 
         if providers:
             self.model_router = ModelRouter(providers)
+            logger.info("model router initialized", providers=list(providers.keys()))
+        else:
+            logger.warning("no llm providers configured — model router not initialized")
 
     def _load_plugins(self) -> None:
         try:

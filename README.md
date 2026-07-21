@@ -32,12 +32,13 @@ Optional integrations install only what you need:
 | `[qdrant]` | `qdrant-client` | Production vector store (falls back to in-memory) |
 | `[queue]` | `arq` (+ redis transitively) | Async background jobs |
 | `[cloud]` | `boto3`, `google-cloud-storage`, `google-cloud-bigquery` | S3 / GCS / BigQuery sources & sinks |
-| `[ml]` | `scikit-learn`, `xgboost`, `sentence-transformers` | Train classical ML models, generate embeddings |
+| `[ml]` | `scikit-learn`, `sentence-transformers` | Train classical ML models, generate embeddings |
 | `[tracking]` | `mlflow` | Experiment tracking via MLflow |
-| `[data]` | `pyspark`, `databricks-cli` | PySpark connector + dbt CLI connector (run dbt models as pipeline steps) |
+| `[data]` | `pyspark` | PySpark connector + dbt CLI connector (run dbt models as pipeline steps) |
+| `[delta]` | `deltalake` | Delta Lake connector |
+| `[pytorch]` | `torch` | PyTorch ML models |
 
 > **LiteLLM** must be installed separately due to a `python-dotenv` pin conflict:
->
 > ```bash
 > pip install 'litellm>=1.83.3' --no-deps
 > ```
@@ -54,11 +55,11 @@ ______________________________________________________________________
 | Storage | Local parquet + DuckDB | S3, GCS, BigQuery (`[cloud]`) |
 | Lineage | JSON / SQLite | Postgres (`[postgres]`) |
 | Scheduler | croniter | — |
-| ML training | scikit-learn wrapper (`[ml]`) | XGBoost (`[ml]`) |
+| ML training | scikit-learn wrapper (`[ml]`) | — |
 | ML tracking | JSON-based | MLflow (`[tracking]`) |
 | LLM providers | Ollama, OpenAI, Anthropic | Any OpenAI-compatible URL |
 | Vector store | in-memory | Qdrant (`[qdrant]`) |
-| Retrieval | BM25 + dense + hybrid | — |
+| Retrieval | BM25 + dense + hybrid + graph | — |
 | Persistence | SQLite, WAL mode (`.dex/store.duckdb`) | — |
 | Logging | structlog | — |
 | Privacy | PrivacyGuard — PII detection, masking strategies, outbound call audit | — |
@@ -119,6 +120,7 @@ ______________________________________________________________________
 | --- | --- |
 | [dataenginex](https://github.com/TheDataEngineX/dataenginex) | This library (PyPI) |
 | [dex-studio](https://github.com/TheDataEngineX/dex-studio) | Web UI — FastAPI + Jinja2 + HTMX |
+| [infradex](https://github.com/TheDataEngineX/infradex) | Kubernetes deployment via ArgoCD |
 
 ______________________________________________________________________
 
