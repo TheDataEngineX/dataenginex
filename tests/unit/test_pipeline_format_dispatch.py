@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dataenginex.config import load_config
+import pytest
+
+pytest.importorskip("deltalake")
+
+from dataenginex.config import load_config  # noqa: E402
 from dataenginex.data.pipeline.runner import PipelineRunner
 
 

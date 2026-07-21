@@ -6,8 +6,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import duckdb
+import pytest
 
-from dataenginex.config import load_config
+pytest.importorskip("deltalake")
+
+from dataenginex.config import load_config  # noqa: E402
 from dataenginex.data.pipeline.runner import PipelineRunner
 
 
