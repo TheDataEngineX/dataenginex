@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dataenginex"
+version = "0.0.1"
+description = "Data layer foundation: Python-first structures, contracts, and medallion pipelines on DuckDB"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Jayapal Reddy Myaka" },
+]
+dependencies = [
+    "duckdb",
+    "pydantic>=2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dataenginex"]
