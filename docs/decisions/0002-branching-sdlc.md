@@ -15,5 +15,5 @@ dex-studio).
   there, push, open a pull request into main, review, merge, then
   delete the feature branch.
 - Releases are tagged from main only.
-- Jay works in Zed on the Mac; Muse prepares code, tests, and docs
-  for his review, and nothing merges without his review.
+- Work is done in Zed on the Mac; nothing merges without the
+  founder's review.
