@@ -19,8 +19,21 @@ listed below exists - nothing else is promised yet.
 
 Exists now:
 - Package skeleton, decision log (docs/decisions/)
-
-Next milestone (M0 kernel spike):
 - Structure and Contract definitions (Python-first, Pydantic v2)
-- dex check: validate a project without running it
-- One pipeline run on DuckDB + DuckLake with a run receipt
+
+Next milestone (M0 kernel spike, from the 2026-10-28 design study):
+- [x] Structure and Contract definitions (Python-first, Pydantic v2)
+- [ ] dataenginex check: validate a project without running it
+- [ ] State store (SQLite: pipeline intervals, snapshots, receipt
+      index) - owned from day one (decision 0007)
+- [ ] Receipt v1 (OpenLineage-shaped superset + cost/quality facets)
+- [ ] One pipeline run on DuckDB + DuckLake with a run receipt
+- [ ] Retail golden dataset as the canonical example
+
+Gate: Jay builds the retail starter using only the public API
+(if he cannot, the API is wrong - decision 0021).
+
+The milestone sequence M0-M5 (PRODUCT_DESIGN) and decisions
+0003-0023 live in docs/decisions/.
+
+License: Apache-2.0 (decision 0003).
