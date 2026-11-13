@@ -4,8 +4,11 @@ from pydantic import ValidationError
 from dataenginex import (
     Column,
     Contract,
+    Pipeline,
     Project,
+    Source,
     Structure,
+    Transform,
     validate_project,
 )
 
@@ -98,3 +101,32 @@ def test_definitions_round_trip_json():
     )
     restored = Project.model_validate_json(project.model_dump_json())
     assert restored == project
+
+
+def test_pipeline_duplicate_table_names_reported():
+    project = Project(
+        name="retail",
+        pipelines=[
+            Pipeline(
+                name="p",
+                sources=[Source(name="orders", path="orders.csv")],
+                silver=[Transform(name="orders", sql="SELECT * FROM orders")],
+            )
+        ],
+    )
+    problems = validate_project(project)
+    assert len(problems) == 1
+    assert "orders" in problems[0]
+
+
+def test_duplicate_pipeline_names_reported():
+    project = Project(
+        name="retail",
+        pipelines=[
+            Pipeline(name="p"),
+            Pipeline(name="p"),
+        ],
+    )
+    problems = validate_project(project)
+    assert len(problems) == 1
+    assert "pipeline" in problems[0]

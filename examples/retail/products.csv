@@ -1,0 +1,6 @@
+product_id,name,category,unit_cost,unit_price
+p1,Basic Tee,apparel,6.0,15.0
+p2,Hoodie,apparel,18.0,42.0
+p3,Mug,accessories,3.0,10.0
+p4,Notebook,stationery,2.0,6.5
+p5,Sticker Pack,accessories,0.5,4.0

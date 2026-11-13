@@ -8,6 +8,8 @@ models; they never redefine them.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 LOGICAL_TYPES = (
@@ -96,12 +98,38 @@ class Contract(BaseModel):
         return value
 
 
+class Source(BaseModel):
+    """Files that land in Bronze as-is (files first, decision 0009)."""
+
+    name: str = Field(min_length=1)
+    path: str = Field(min_length=1)
+    table: str | None = None
+
+
+class Transform(BaseModel):
+    """One SQL statement that materializes a table in a layer."""
+
+    name: str = Field(min_length=1)
+    sql: str = Field(min_length=1)
+
+
+class Pipeline(BaseModel):
+    """One medallion pipeline: fixed Bronze / Silver / Gold."""
+
+    name: str = Field(min_length=1)
+    sources: list[Source] = Field(default_factory=list)
+    bronze: list[Transform] = Field(default_factory=list)
+    silver: list[Transform] = Field(default_factory=list)
+    gold: list[Transform] = Field(default_factory=list)
+
+
 class Project(BaseModel):
     """A set of definitions that `dataenginex check` validates as a whole."""
 
     name: str
     structures: list[Structure] = Field(default_factory=list)
     contracts: list[Contract] = Field(default_factory=list)
+    pipelines: list[Pipeline] = Field(default_factory=list)
 
 
 def validate_project(project: Project) -> list[str]:
@@ -136,4 +164,24 @@ def validate_project(project: Project) -> list[str]:
                     "contract for " + contract.structure
                     + " requires unique on unknown column: " + col
                 )
+    pipeline_names: dict[str, Pipeline] = {}
+    for pipeline in project.pipelines:
+        if pipeline.name in pipeline_names:
+            problems.append("duplicate pipeline name: " + pipeline.name)
+        pipeline_names[pipeline.name] = pipeline
+        tables: set[str] = set()
+
+        def add_table(name: str, where: str) -> None:
+            if name in tables:
+                problems.append(
+                    "duplicate table name in pipeline " + pipeline.name
+                    + ": " + name + " (" + where + ")"
+                )
+            tables.add(name)
+
+        for source in pipeline.sources:
+            add_table(source.table or Path(source.path).stem, "source")
+        for layer in ("bronze", "silver", "gold"):
+            for transform in getattr(pipeline, layer):
+                add_table(transform.name, layer)
     return problems
