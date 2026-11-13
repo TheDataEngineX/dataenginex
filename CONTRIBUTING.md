@@ -31,4 +31,6 @@ through a pull request, nothing merges without the founder's review
   request as the change they explain.
 - Code is promoted into this foundation package only by the rule of
   two: a second consumer must need it first.
+- Commits are signed off with the DCO: git commit -s
+  (decision 0003).
 - Plain ASCII in code and docs.

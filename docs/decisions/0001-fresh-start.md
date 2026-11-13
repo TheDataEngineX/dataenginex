@@ -19,6 +19,7 @@ Decisions carried into the rebuild:
   superseding the 0.8.0 PyPI-continuity idea). If 0.0.1 was ever
   published to PyPI by the old project, the first rebuild release
   takes the next free number at publish time.
-- License: MIT for now (continuity with v0.7.0). The research pack
-  proposed Apache-2.0 + DCO; confirm before the first rebuild release.
+- License: Apache-2.0 + DCO, adopted 2026-11-12 with the design
+  study ADR set (decision 0003 / ADR-001). The MIT option was
+  retired with the fresh start.
 - One milestone at a time. The job hunt and life outrank this project.
