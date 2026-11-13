@@ -23,12 +23,12 @@ Exists now:
 
 Next milestone (M0 kernel spike, from the 2026-10-28 design study):
 - [x] Structure and Contract definitions (Python-first, Pydantic v2)
-- [ ] dataenginex check: validate a project without running it
-- [ ] State store (SQLite: pipeline intervals, snapshots, receipt
+- [x] dataenginex check: validate a project without running it
+- [x] State store (SQLite: pipeline intervals, snapshots, receipt
       index) - owned from day one (decision 0007)
-- [ ] Receipt v1 (OpenLineage-shaped superset + cost/quality facets)
-- [ ] One pipeline run on DuckDB + DuckLake with a run receipt
-- [ ] Retail golden dataset as the canonical example
+- [x] Receipt v1 (OpenLineage-shaped superset + cost/quality facets)
+- [x] One pipeline run on DuckDB + DuckLake with a run receipt
+- [x] Retail golden dataset as the canonical example (examples/retail/)
 
 Gate: Jay builds the retail starter using only the public API
 (if he cannot, the API is wrong - decision 0021).
