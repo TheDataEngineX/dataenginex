@@ -18,8 +18,10 @@ removed in full; this rebuild starts at version 0.0.1. Only what is
 listed below exists - nothing else is promised yet.
 
 Exists now:
-- Package skeleton, decision log (docs/decisions/)
-- Structure and Contract definitions (Python-first, Pydantic v2)
+- Definitions (structures, contracts, pipelines), the DuckDB engine
+  with contract gates and quarantine, the state store, receipts, and
+  the retail example (M0/M1a)
+- Decision log (docs/decisions/)
 
 Next milestone (M0 kernel spike, from the 2026-10-28 design study):
 - [x] Structure and Contract definitions (Python-first, Pydantic v2)
@@ -32,6 +34,15 @@ Next milestone (M0 kernel spike, from the 2026-10-28 design study):
 
 Gate: Jay builds the retail starter using only the public API
 (if he cannot, the API is wrong - decision 0021).
+
+Next milestone (M1 dex local, from the 2026-10-28 design study):
+- [x] Contract gates: not-null and unique violations move to
+      queryable quarantine tables (M1a)
+- [x] Idempotent re-runs: an unchanged definition refuses to re-run
+      after success unless forced (M1a)
+- [ ] init template with the retail sample data (M1b)
+- [ ] Docker image, PyPI releases, old versions yanked (M1c)
+- Gate: 3 external users finish the tutorial unaided.
 
 The milestone sequence M0-M5 (PRODUCT_DESIGN) and decisions
 0003-0023 live in docs/decisions/.

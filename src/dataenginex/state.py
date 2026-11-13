@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS intervals (
     pipeline TEXT PRIMARY KEY,
     interval_start TEXT NOT NULL,
     interval_end TEXT NOT NULL,
-    state TEXT NOT NULL
+    state TEXT NOT NULL,
+    definition_hash TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS receipts (
     run_id TEXT PRIMARY KEY,
@@ -58,12 +59,24 @@ class StateStore:
         interval_start: str,
         interval_end: str,
         state: str,
+        definition_hash: str = "",
     ) -> None:
         self._con.execute(
-            "INSERT OR REPLACE INTO intervals VALUES (?, ?, ?, ?)",
-            (pipeline, interval_start, interval_end, state),
+            "INSERT OR REPLACE INTO intervals VALUES (?, ?, ?, ?, ?)",
+            (pipeline, interval_start, interval_end, state, definition_hash),
         )
         self._con.commit()
+
+    def last_interval(
+        self, pipeline: str
+    ) -> tuple[str, str, str] | None:
+        """(interval_end, state, definition_hash) of the last run, or None."""
+        row = self._con.execute(
+            "SELECT interval_end, state, definition_hash"
+            " FROM intervals WHERE pipeline = ?",
+            (pipeline,),
+        ).fetchone()
+        return row
 
     def index_receipt(self, run_id: str, path: str) -> None:
         self._con.execute(

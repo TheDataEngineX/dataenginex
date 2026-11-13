@@ -6,7 +6,16 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from dataenginex import Pipeline, Project, Transform, run_pipeline
+from dataenginex import (
+    Column,
+    Contract,
+    Pipeline,
+    Project,
+    Source,
+    Structure,
+    Transform,
+    run_pipeline,
+)
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "retail"
 
@@ -76,4 +85,67 @@ def test_failed_run_writes_failed_receipt(tmp_path):
 def test_unknown_pipeline_is_an_error(tmp_path):
     project = Project(name="retail")
     with pytest.raises(ValueError):
-        run_pipeline(project, "nope", str(tmp_path))
+        run_pipeline(project, "p", str(tmp_path))
+
+
+def _dirty_project(tmp_path):
+    (tmp_path / "orders.csv").write_text(
+        "order_id,ordered_at\n"
+        "o1,2026-10-01 09:00:00\n"
+        "o1,2026-10-01 10:00:00\n"
+        ",2026-10-01 11:00:00\n"
+    )
+    return Project(
+        name="dirty",
+        structures=[Structure(name="orders", columns=[Column(name="order_id", dtype="string")])],
+        contracts=[Contract(structure="orders", not_null=["order_id"], unique=["order_id"])],
+        pipelines=[Pipeline(name="p", sources=[Source(name="orders", path="orders.csv")])],
+    )
+
+
+def test_dirty_rows_are_quarantined(tmp_path):
+    project = _dirty_project(tmp_path)
+    receipt = run_pipeline(project, "p", str(tmp_path))
+
+    # the null row and the duplicate row were quarantined; one row remains
+    assert receipt.layers["bronze"]["orders"] == 1
+    rules = {q.rule: q for q in receipt.quality}
+    assert rules["not_null"].violations == 1
+    assert rules["unique"].violations == 1
+    assert not rules["not_null"].passed
+    assert not rules["unique"].passed
+
+    quarantine = tmp_path / ".dex" / "lakehouse" / "quarantine"
+    con = duckdb.connect()
+    null_rows = con.execute(
+        f"SELECT COUNT(*) FROM read_parquet('{quarantine / 'quarantine__orders__order_id__not_null.parquet'}')"
+    ).fetchone()[0]
+    dupe_rows = con.execute(
+        f"SELECT COUNT(*) FROM read_parquet('{quarantine / 'quarantine__orders__order_id__unique.parquet'}')"
+    ).fetchone()[0]
+    assert (null_rows, dupe_rows) == (1, 1)
+
+    # the materialized bronze table is clean
+    clean = con.execute(
+        f"SELECT COUNT(*) FROM read_parquet('{tmp_path / '.dex' / 'lakehouse' / 'bronze' / 'orders.parquet'}')"
+    ).fetchone()[0]
+    assert clean == 1
+
+
+def test_rerun_of_same_definition_is_refused_without_force(tmp_path):
+    project = _dirty_project(tmp_path)
+    run_pipeline(project, "p", str(tmp_path))
+    with pytest.raises(ValueError, match="already ran"):
+        run_pipeline(project, "p", str(tmp_path))
+    # force re-runs
+    receipt = run_pipeline(project, "p", str(tmp_path), force=True)
+    assert receipt.run.status == "succeeded"
+
+
+def test_rerun_after_definition_change_is_allowed(tmp_path):
+    project = _dirty_project(tmp_path)
+    run_pipeline(project, "p", str(tmp_path))
+    changed = project.model_copy(deep=True)
+    changed.pipelines[0].silver.append(Transform(name="copy", sql="SELECT * FROM orders"))
+    receipt = run_pipeline(changed, "p", str(tmp_path))
+    assert receipt.layers["silver"]["copy"] == 1
