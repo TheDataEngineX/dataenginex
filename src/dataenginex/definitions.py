@@ -31,6 +31,7 @@ class Column(BaseModel):
     dtype: str
     nullable: bool = True
     description: str = ""
+    sensitive: bool = False
 
     @field_validator("dtype")
     @classmethod

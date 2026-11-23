@@ -16,6 +16,7 @@ where a real DuckLake/Iceberg implementation plugs in.
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -96,12 +97,48 @@ def _materialize(
     con.execute(f"COPY (SELECT * FROM {_q(table)}) TO {_qpath(out)} (FORMAT PARQUET)")
 
 
-def _definition_hash(pipeline: Pipeline) -> str:
-    return hashlib.sha256(pipeline.model_dump_json().encode()).hexdigest()
+def _definition_hash(project: Project, pipeline: Pipeline) -> str:
+    table_names = {
+        source.table or Path(source.path).stem for source in pipeline.sources
+    }
+    for layer in (pipeline.bronze, pipeline.silver, pipeline.gold):
+        table_names.update(transform.name for transform in layer)
+    definition = {
+        "pipeline": pipeline.model_dump(),
+        "structures": [
+            structure.model_dump()
+            for structure in project.structures
+            if structure.name in table_names
+        ],
+        "contracts": [
+            contract.model_dump()
+            for contract in project.contracts
+            if contract.structure in table_names
+        ],
+    }
+    canonical = json.dumps(definition, sort_keys=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _quarantine_projection(
+    con: duckdb.DuckDBPyConnection, table: str, sensitive_columns: set[str]
+) -> str:
+    columns = con.execute(f"DESCRIBE SELECT * FROM {_q(table)}").fetchall()
+    return ", ".join(
+        (
+            f"CASE WHEN TRUE THEN NULL ELSE {_q(column[0])} END AS {_q(column[0])}"
+            if column[0] in sensitive_columns
+            else _q(column[0])
+        )
+        for column in columns
+    )
 
 
 def _quarantine_not_null(
-    con: duckdb.DuckDBPyConnection, table: str, col: str
+    con: duckdb.DuckDBPyConnection,
+    table: str,
+    col: str,
+    sensitive_columns: set[str],
 ) -> int:
     """Move rows violating not-null into a quarantine table; return count."""
     qt = f"quarantine__{table}__{col}__not_null"
@@ -112,14 +149,18 @@ def _quarantine_not_null(
         return 0
     con.execute(
         f"CREATE OR REPLACE TABLE {_q(qt)} AS "
-        f"SELECT * FROM {_q(table)} WHERE {_q(col)} IS NULL"
+        f"SELECT {_quarantine_projection(con, table, sensitive_columns)} "
+        f"FROM {_q(table)} WHERE {_q(col)} IS NULL"
     )
     con.execute(f"DELETE FROM {_q(table)} WHERE {_q(col)} IS NULL")
     return n
 
 
 def _quarantine_duplicates(
-    con: duckdb.DuckDBPyConnection, table: str, col: str
+    con: duckdb.DuckDBPyConnection,
+    table: str,
+    col: str,
+    sensitive_columns: set[str],
 ) -> int:
     """Move duplicate rows (beyond the first occurrence) into quarantine."""
     qt = f"quarantine__{table}__{col}__unique"
@@ -130,7 +171,8 @@ def _quarantine_duplicates(
     )
     con.execute(
         f"CREATE OR REPLACE TABLE {_q(qt)} AS "
-        f"SELECT * FROM {_q(table)} WHERE rowid IN ({dupes})"
+        f"SELECT {_quarantine_projection(con, table, sensitive_columns)} "
+        f"FROM {_q(table)} WHERE rowid IN ({dupes})"
     )
     n = con.execute(f"SELECT COUNT(*) FROM {_q(qt)}").fetchone()[0]
     if n:
@@ -151,12 +193,19 @@ def _gate_layer(
     only the rows that passed. Returns the quarantine table names.
     """
     quarantined: list[str] = []
+    structures = {structure.name: structure for structure in project.structures}
     for contract in project.contracts:
         if contract.structure not in layer_tables[layer]:
             continue
         table = contract.structure
+        structure = structures.get(table)
+        sensitive_columns = {
+            column.name
+            for column in structure.columns
+            if column.sensitive
+        } if structure else set()
         for col in contract.not_null:
-            n = _quarantine_not_null(con, table, col)
+            n = _quarantine_not_null(con, table, col, sensitive_columns)
             if n:
                 quarantined.append(f"quarantine__{table}__{col}__not_null")
             quality.append(
@@ -165,7 +214,7 @@ def _gate_layer(
                 )
             )
         for col in contract.unique:
-            n = _quarantine_duplicates(con, table, col)
+            n = _quarantine_duplicates(con, table, col, sensitive_columns)
             if n:
                 quarantined.append(f"quarantine__{table}__{col}__unique")
             quality.append(
@@ -216,7 +265,7 @@ def run_pipeline(
 
     run_id = uuid.uuid4().hex
     started_at = _now()
-    definition_hash = _definition_hash(pipeline)
+    definition_hash = _definition_hash(project, pipeline)
     state = StateStore(str(ws / "state.sqlite"))
     if not force:
         last = state.last_interval(pipeline.name)

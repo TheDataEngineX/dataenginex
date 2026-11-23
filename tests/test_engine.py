@@ -132,6 +132,91 @@ def test_dirty_rows_are_quarantined(tmp_path):
     assert clean == 1
 
 
+def test_sensitive_values_are_redacted_in_quarantine(tmp_path):
+    (tmp_path / "orders.csv").write_text(
+        "order_id,email\n"
+        "o1,valid@example.test\n"
+        "o1,duplicate@example.test\n"
+        ",missing-key@example.test\n"
+    )
+    project = Project(
+        name="sensitive",
+        structures=[
+            Structure(
+                name="orders",
+                columns=[
+                    Column(name="order_id", dtype="string"),
+                    Column(name="email", dtype="string", sensitive=True),
+                ],
+            )
+        ],
+        contracts=[
+            Contract(structure="orders", not_null=["order_id"], unique=["order_id"])
+        ],
+        pipelines=[
+            Pipeline(name="p", sources=[Source(name="orders", path="orders.csv")])
+        ],
+    )
+
+    run_pipeline(project, "p", str(tmp_path))
+
+    quarantine = tmp_path / ".dex" / "lakehouse" / "quarantine"
+    con = duckdb.connect()
+    expected_rows = {
+        "quarantine__orders__order_id__not_null.parquet": [(None, None)],
+        "quarantine__orders__order_id__unique.parquet": [
+            ("o1", None)
+        ],
+    }
+    for filename, expected in expected_rows.items():
+        rows = con.execute(
+            f"SELECT order_id, email FROM read_parquet('{quarantine / filename}')"
+        ).fetchall()
+        assert rows == expected
+
+
+def test_changing_sensitivity_is_a_definition_change(tmp_path):
+    (tmp_path / "orders.csv").write_text(
+        "order_id,email\n"
+        "o1,duplicate@example.test\n"
+        "o1,second@example.test\n"
+    )
+    project = Project(
+        name="sensitive",
+        structures=[
+            Structure(
+                name="orders",
+                columns=[
+                    Column(name="order_id", dtype="string"),
+                    Column(name="email", dtype="string"),
+                ],
+            )
+        ],
+        contracts=[Contract(structure="orders", unique=["order_id"])],
+        pipelines=[
+            Pipeline(name="p", sources=[Source(name="orders", path="orders.csv")])
+        ],
+    )
+    run_pipeline(project, "p", str(tmp_path))
+
+    changed = project.model_copy(deep=True)
+    changed.structures[0].columns[1].sensitive = True
+    receipt = run_pipeline(changed, "p", str(tmp_path))
+
+    assert receipt.run.status == "succeeded"
+    quarantine_file = (
+        tmp_path
+        / ".dex"
+        / "lakehouse"
+        / "quarantine"
+        / "quarantine__orders__order_id__unique.parquet"
+    )
+    con = duckdb.connect()
+    assert con.execute(
+        f"SELECT email FROM read_parquet('{quarantine_file}')"
+    ).fetchall() == [(None,)]
+
+
 def test_rerun_of_same_definition_is_refused_without_force(tmp_path):
     project = _dirty_project(tmp_path)
     run_pipeline(project, "p", str(tmp_path))

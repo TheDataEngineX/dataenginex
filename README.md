@@ -48,3 +48,12 @@ The milestone sequence M0-M5 (PRODUCT_DESIGN) and decisions
 0003-0023 live in docs/decisions/.
 
 License: Apache-2.0 (decision 0003).
+
+## Sensitive columns and quarantine
+
+Set `sensitive=True` on a `Column` to prevent its value from being copied
+into quarantine Parquet files. DEX writes `NULL` for that column in
+quarantine while retaining other row fields for diagnosis. This applies
+only to quarantine artifacts; source files and regular layer outputs are
+unchanged. Treat the workspace and source files as sensitive, and mark
+the column sensitive in each `Structure` where it appears.
